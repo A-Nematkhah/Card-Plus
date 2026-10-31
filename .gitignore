@@ -140,6 +140,8 @@ dmypy.json
 # tmp files
 **/tmp/**/*
 api_key.py
+xai_keys.json
+groq_keys.json
 tmp.*
 
 ## Server logging
@@ -152,3 +154,9 @@ tmp.*
 **/.debug/**/*
 
 **/wandb/**
+
+# Python-RVO2 local build
+third_party/Python-RVO2/build/
+third_party/Python-RVO2/*.egg-info/
+third_party/Python-RVO2/**/*.pyd
+third_party/Python-RVO2/**/*.so

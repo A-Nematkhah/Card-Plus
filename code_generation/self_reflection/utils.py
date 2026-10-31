@@ -13,6 +13,13 @@ INFO_PREFIX="convert_info/"
 COLOR_ENABLED=False
 
 
+def print_with_color(content: str, color: str = "GREEN") -> None:
+    if COLOR_ENABLED:
+        print(getattr(colorama.Fore, color) + content + colorama.Style.RESET_ALL)
+    else:
+        print(content)
+
+
 def set_seed_everywhere(seed: int, using_cuda: bool = False) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -58,18 +65,55 @@ class SubRewardLog(BaseCallback):
                                 episode_data[k] = 0
                             episode_data[k] += v
                     obs = next_obs
-                for k, v in episode_data.items():
-                    self.learning_result[k][-1].append(v)
+                # LLM reward dicts can add keys mid-training (e.g. collision only on some steps).
+                for k in set(episode_data) | set(self.learning_result):
+                    if k not in self.learning_result:
+                        n_slots = 1
+                        n_done_this_eval = 0
+                        if self.learning_result:
+                            sample = next(iter(self.learning_result.values()))
+                            n_slots = len(sample)
+                            n_done_this_eval = len(sample[-1]) if sample else 0
+                        # Pad prior evals, and missed episodes in the current eval.
+                        self.learning_result[k] = [
+                            [0.0 for _ in range(self.n_eval_episodes)] for _ in range(max(n_slots - 1, 0))
+                        ] + [[0.0] * n_done_this_eval]
+                    self.learning_result[k][-1].append(float(episode_data.get(k, 0.0)))
             for k, v in self.learning_result.items():
-                self.logger.record(f"ep_mean_{k}", np.mean(v[-1]))
+                if v[-1]:
+                    self.logger.record(f"ep_mean_{k}", np.mean(v[-1]))
         return super()._on_step()
 
     def on_training_end(self) -> None:
-        os.makedirs(self.log_path, exist_ok=True)
-        file_path = os.path.join(self.log_path, self.log_file_name)
-        np.savez(file_path, **self.learning_result)
-        if self.verbose > 0:
-            print(f"Sub rewards saved to {file_path}")
+        # Logging must never abort a finished training run.
+        try:
+            os.makedirs(self.log_path, exist_ok=True)
+            file_path = os.path.join(self.log_path, self.log_file_name)
+            n_evals = 0
+            for v in self.learning_result.values():
+                n_evals = max(n_evals, len(v))
+            to_save = {}
+            for k, series in self.learning_result.items():
+                rows = []
+                for slot in series:
+                    try:
+                        values = [float(x) for x in slot]
+                    except (TypeError, ValueError):
+                        values = []
+                    if len(values) < self.n_eval_episodes:
+                        values = values + [0.0] * (self.n_eval_episodes - len(values))
+                    else:
+                        values = values[: self.n_eval_episodes]
+                    rows.append(values)
+                while len(rows) < n_evals:
+                    rows.append([0.0 for _ in range(self.n_eval_episodes)])
+                to_save[k] = np.asarray(rows, dtype=np.float64)
+            if to_save:
+                np.savez(file_path, **to_save)
+            if self.verbose > 0:
+                print(f"Sub rewards saved to {file_path}")
+        except Exception as exc:
+            print_with_color(f"SubRewardLog save failed (training continues): {exc}", "YELLOW")
 
 def get_learning_result_mean(learning_result_list: list, save_path: str):
     data_all_dict = {}
@@ -94,32 +138,46 @@ def get_learning_result_mean(learning_result_list: list, save_path: str):
             if key == "timesteps" or MEAN_SUFFIX in key or STD_SUFFIX in key}
 
 def get_learning_result_feedback_simple(learning_result: dict, log_point_num):
-    timesteps = learning_result['timesteps']
-    results_mean = np.mean(learning_result['results'], axis=1)
-    results_std = np.std(learning_result['results'], axis=1)
-    ep_lengths_mean = np.mean(learning_result['ep_lengths'], axis=1)
-    ep_lengths_std = np.std(learning_result['ep_lengths'], axis=1)
-    successes_mean = np.mean(learning_result['successes'], axis=1)
-    successes_std = np.std(learning_result['successes'], axis=1)
+    timesteps = np.asarray(learning_result['timesteps']).reshape(-1)
+    n = len(timesteps)
+    if n == 0:
+        return "No evaluation timesteps recorded.\n"
+
+    def _mean_std(key, axis=1):
+        if key not in learning_result:
+            return np.zeros(n), np.zeros(n)
+        arr = np.asarray(learning_result[key], dtype=np.float64)
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        # Align shorter sub-reward series (late-appearing keys) to timesteps.
+        if arr.shape[0] < n:
+            pad = np.zeros((n - arr.shape[0], arr.shape[1]), dtype=np.float64)
+            arr = np.concatenate([pad, arr], axis=0)
+        elif arr.shape[0] > n:
+            arr = arr[-n:]
+        return np.mean(arr, axis=axis), np.std(arr, axis=axis)
+
+    results_mean, results_std = _mean_std('results')
+    ep_lengths_mean, ep_lengths_std = _mean_std('ep_lengths')
+    successes_mean, successes_std = _mean_std('successes')
     learning_result_feedback = "Evaluation is conducted at specific training intervals. The average results of the episodes are as follows:\n"
-    if len(timesteps) < log_point_num:
+    if n < log_point_num:
         log_interval = 1
     else:
-        log_interval = len(timesteps) // log_point_num
-    step_list = list(range(len(timesteps)-1, -1, -log_interval))
+        log_interval = n // log_point_num
+    step_list = list(range(n - 1, -1, -log_interval))
     if len(step_list) > log_point_num:
         step_list = step_list[:log_point_num]
     step_list.reverse()
     for i in step_list:
-        learning_result_feedback += (f"When step is {timesteps[i]}, "
+        learning_result_feedback += (f"When step is {int(timesteps[i])}, "
                     f"return is {results_mean[i]:.1f} (±{results_std[i]:.1f}), "
                     f"episode length is {ep_lengths_mean[i]:.1f} (±{ep_lengths_std[i]:.1f}), "
                     f"success rate is {successes_mean[i]*100:.1f}% (±{successes_std[i]*100:.1f}%), ")
         for key in learning_result.keys():
             if SUB_REWARD_PREFIX in key:
                 core_key = key.replace(SUB_REWARD_PREFIX, "")
-                value_mean = np.mean(learning_result[key], axis=1)
-                value_std = np.std(learning_result[key], axis=1)
+                value_mean, value_std = _mean_std(key)
                 learning_result_feedback += (
                     f"cumulative {core_key} for the trajectory is {value_mean[i]:.1f} (±{value_std[i]:.1f}), "
                 )
@@ -155,6 +213,11 @@ def collect_trajectories(model, env, mapping_dicts, trajectory_num=10, benchmark
                         episode_data[key].append(info[value])
                     else:
                         episode_data[key].append(eval(value))
+            elif benchmark_name == "crowdnav":
+                for key, value in mapping_dicts.items():
+                    if key not in episode_data.keys():
+                        episode_data[key] = []
+                    episode_data[key].append(eval(value))
             elif benchmark_name == "maniskill":
                 for key, value in info.items():
                     if key.startswith(INFO_PREFIX):
@@ -163,15 +226,23 @@ def collect_trajectories(model, env, mapping_dicts, trajectory_num=10, benchmark
                         episode_data[key].append(value)
             else:
                 raise RuntimeError("benchmark name error!")
+            # Sub-reward keys can appear mid-episode; keep every series aligned with obs length.
+            t_now = len(episode_data["obs"])
+            seen_sub = {k for k in episode_data if k.startswith(SUB_REWARD_PREFIX)}
+            step_sub = {}
             for key, value in info.items():
                 if key.startswith(SUB_REWARD_PREFIX):
-                    if key not in episode_data.keys():
-                        episode_data[key] = []
-                    episode_data[key].append(value)
+                    step_sub[key] = float(value)
+            for key in seen_sub | set(step_sub):
+                if key not in episode_data:
+                    episode_data[key] = [0.0] * (t_now - 1)
+                elif len(episode_data[key]) < t_now - 1:
+                    episode_data[key].extend([0.0] * (t_now - 1 - len(episode_data[key])))
+                episode_data[key].append(step_sub.get(key, 0.0))
             obs = next_obs
         
         for key in episode_data.keys():
-            episode_data[key] = np.array(episode_data[key])
+            episode_data[key] = np.array(episode_data[key], dtype=object) if key == "infos" else np.array(episode_data[key])
         reward_sums.append(np.sum(episode_data['rewards']))
         trajectories.append(episode_data)
     return trajectories
@@ -180,53 +251,96 @@ def convert_traj_to_str(trajectory_list: list, mapping_dicts, log_interval=100, 
     feedback_list = []
     for traj in trajectory_list:
         ep_len = len(traj['obs'])
+        if ep_len == 0:
+            feedback_list.append("Empty trajectory.\n")
+            continue
         feedback_str = ""
         sequence = [0] + list(range(log_interval-1, ep_len, log_interval))
         if sequence[-1] != ep_len-1:
             sequence.append(ep_len-1)
         for i in sequence:
+            if i >= ep_len:
+                continue
             feedback_str += f"When step is {i+1}, "
             for key, value in traj.items():
-                if benchmark_name == "metaworld":
+                try:
+                    n = len(value)
+                except TypeError:
+                    continue
+                if i >= n:
+                    continue
+                if benchmark_name in ("metaworld", "crowdnav"):
                     if key in mapping_dicts or "reward" in key:
-                        if isinstance(value[i], np.ndarray) and value[i].ndim == 1:
-                            formatted_value = ", ".join(f"{v:.1f}" for v in value[i])
-                            formatted_key = key.replace(SUB_REWARD_PREFIX, '')
-                            feedback_str += f"{formatted_key} is [{formatted_value}], "
-                        else:
-                            formatted_key = key.replace(SUB_REWARD_PREFIX, '')
-                            if key == "rewards":
-                                formatted_key = "reward"
-                            feedback_str += f"{formatted_key} is {value[i]:.1f}, "
+                        cell = value[i]
+                        formatted_key = key.replace(SUB_REWARD_PREFIX, '')
+                        if key == "rewards":
+                            formatted_key = "reward"
+                        try:
+                            if isinstance(cell, np.ndarray) and cell.ndim >= 1:
+                                formatted_value = ", ".join(f"{float(v):.1f}" for v in np.asarray(cell).reshape(-1))
+                                feedback_str += f"{formatted_key} is [{formatted_value}], "
+                            else:
+                                feedback_str += f"{formatted_key} is {float(cell):.1f}, "
+                        except (TypeError, ValueError):
+                            continue
                 elif benchmark_name == "maniskill":
                     if key.startswith(INFO_PREFIX) or "reward" in key:
-                        if isinstance(value[i], np.ndarray) and value[i].ndim == 1:
-                            formatted_value = ", ".join(f"{v:.1f}" for v in value[i])
-                            formatted_key = key.replace(SUB_REWARD_PREFIX, '')
-                            feedback_str += f"{formatted_key} is [{formatted_value}], "
-                        else:
-                            formatted_key = key.replace(SUB_REWARD_PREFIX, '')
-                            if key == "rewards":
-                                formatted_key = "reward"
-                            feedback_str += f"{formatted_key} is {value[i]:.1f}, "
+                        cell = value[i]
+                        formatted_key = key.replace(SUB_REWARD_PREFIX, '')
+                        if key == "rewards":
+                            formatted_key = "reward"
+                        try:
+                            if isinstance(cell, np.ndarray) and cell.ndim >= 1:
+                                formatted_value = ", ".join(f"{float(v):.1f}" for v in np.asarray(cell).reshape(-1))
+                                feedback_str += f"{formatted_key} is [{formatted_value}], "
+                            else:
+                                feedback_str += f"{formatted_key} is {float(cell):.1f}, "
+                        except (TypeError, ValueError):
+                            continue
             feedback_str += "\n"
-        if traj["infos"][-1]["success"] == True:
-            feedback_str += f"At step {sequence[-1]+1}, the agent solves the task, so the trajectory ends.\n"
+        last_info = {}
+        try:
+            last_info = traj["infos"][-1]
+            if not isinstance(last_info, dict):
+                last_info = {}
+        except Exception:
+            last_info = {}
+        solved = bool(last_info.get("success", last_info.get("is_success", False)))
+        end_step = int(sequence[-1]) + 1 if sequence else ep_len
+        if solved:
+            feedback_str += f"At step {end_step}, the agent solves the task, so the trajectory ends.\n"
         else:
-            feedback_str += f"At step {sequence[-1]+1}, the agent still has not solved the task and the maximum trajectory length of {sequence[-1]+1} is reached, so the trajectory ends.\n"
+            feedback_str += (
+                f"At step {end_step}, the agent still has not solved the task and the maximum "
+                f"trajectory length of {end_step} is reached, so the trajectory ends.\n"
+            )
         if feedback_str[-3:] == ", \n":
             feedback_str = feedback_str[:-3] + ". \n"
         feedback_list.append(feedback_str)
     return feedback_list
 
-def get_eval_feedback(trajectory_list: list, mapping_dicts, log_interval=100):
-    sums = [np.sum(traj['rewards']) for traj in trajectory_list]
-    max_index = np.argmax(sums)
-    min_index = np.argmin(sums)
+def get_eval_feedback(trajectory_list: list, mapping_dicts, log_interval=100, benchmark_name="metaworld"):
+    if not trajectory_list:
+        msg = "After training, no evaluation trajectories were available.\n"
+        print("eval feedback is:")
+        print(msg)
+        return msg
+    sums = []
+    for traj in trajectory_list:
+        try:
+            sums.append(float(np.sum(traj["rewards"])))
+        except Exception:
+            sums.append(float("-inf"))
+    max_index = int(np.argmax(sums))
+    min_index = int(np.argmin(sums))
     special_trajectory_list = [trajectory_list[max_index], trajectory_list[min_index]]
-    feedback_list = []
     eval_feedback = "After training, we evaluated the model and the two trajectories with the highest and lowest return are as follows:\n"
-    feedback_list = convert_traj_to_str(trajectory_list=special_trajectory_list, mapping_dicts=mapping_dicts, log_interval=log_interval)
+    feedback_list = convert_traj_to_str(
+        trajectory_list=special_trajectory_list,
+        mapping_dicts=mapping_dicts,
+        log_interval=log_interval,
+        benchmark_name=benchmark_name,
+    )
     eval_feedback += f"trajectories with the highest return {sums[max_index]:.1f} is:\n" + feedback_list[0] + "\n"
     eval_feedback += f"trajectories with the lowest return {sums[min_index]:.1f} is:\n" + feedback_list[1]
     print("eval feedback is:")
@@ -239,7 +353,7 @@ def convert_function_external(reward_function_code: str, benchmark_name="metawor
         reward_function_code = re.sub(r"action\s*:\s*np\.ndarray\s*,\s*obs\s*:\s*np\.ndarray\s*\)\s*->\s*Tuple\s*\[\s*float\s*,\s*Dict\s*\[\s*str\s*,\s*float\s*\]\s*\]\s*:", 'action: np.ndarray, obs: np.ndarray, goal_position) -> Tuple[float, Dict[str, float]]:', reward_function_code)
         reward_function_code = re.sub(r'self.env._get_pos_goal\(\)', 'goal_position', reward_function_code)
         return reward_function_code
-    elif benchmark_name == "maniskill":
+    elif benchmark_name in ("maniskill", "crowdnav"):
         reward_function_code = re.sub(r'def compute_dense_reward\(self, ', 'def compute_dense_reward(', reward_function_code)
         return reward_function_code
     else:
@@ -264,6 +378,8 @@ def trajectories_return_check(reward_function, trajectories, mapping_dicts, thre
         for step in range(len(traj['obs'])):
             if benchmark_name == "metaworld":
                 result = reward_function(action=traj['actions'][step], obs=traj['obs'][step], goal_position=traj['self.goal_position'][step])
+            elif benchmark_name == "crowdnav":
+                result = reward_function(action=traj['actions'][step], obs=traj['obs'][step])
             elif benchmark_name == "maniskill":
                 ac = traj['actions'][step]
                 ob, result, done, info = env.step(ac)
@@ -275,7 +391,10 @@ def trajectories_return_check(reward_function, trajectories, mapping_dicts, thre
                 reward = result
             rewards.append(reward)
         total_reward = np.sum(rewards)
-        if traj['infos'][-1]['success']:
+        last_info = traj["infos"][-1] if len(traj.get("infos", [])) else {}
+        if not isinstance(last_info, dict):
+            last_info = {}
+        if bool(last_info.get("success", last_info.get("is_success", False))):
             success_trajs["pos"].append(traj_pos)
             success_trajs["traj"].append(traj)
             success_trajs["return"].append(total_reward)
@@ -318,7 +437,8 @@ def trajectories_return_check(reward_function, trajectories, mapping_dicts, thre
             feedback_list = convert_traj_to_str(trajectory_list=[success_trajs["traj"][success_min_index],
                                                                  failure_trajs["traj"][failure_max_index]],
                                                 mapping_dicts=mapping_dicts,
-                                                log_interval=log_interval
+                                                log_interval=log_interval,
+                                                benchmark_name=benchmark_name,
                                                 )
             feedback += f"For example, this is a trajectory where the agent successfully solved the task, with a return of {success_trajs['return'][success_min_index]:.1f}, a length of {len(success_trajs['traj'][success_min_index]['obs'])}, and an average reward per step of {success_min_r:.1f}:\n"
             feedback = feedback + feedback_list[0] + "\n"

@@ -13,8 +13,44 @@ from langchain.prompts.chat import (
     SystemMessagePromptTemplate,
     HumanMessagePromptTemplate,
 )
+try:
+    from langchain.schema import AIMessage, BaseMessage
+except ImportError:
+    from langchain_core.messages import AIMessage, BaseMessage
 from code_generation.post_process.post_process import RewardFunctionConverter
 from code_generation.self_reflection.utils import print_with_color
+from key_manager import get_xai_key_manager, is_xai_model
+
+AZURE_MODELS = ["gpt-3.5-turbo", "gpt-35-turbo-1106", "gpt-4", "gpt-4-0314", "gpt-4-0613", "gpt-4-1106-preview", "gemini-1.5-pro-preview-0409"]
+XAI_MAX_TOKENS = 16384
+DEFAULT_XAI_REASONING_EFFORT = "high"
+_CHAT_ROLES = {"system": "system", "human": "user", "ai": "assistant"}
+
+
+def _strip_think_tags(content: str) -> str:
+    return re.sub(r"<think>.*?</think>", "", content or "", flags=re.DOTALL).strip()
+
+
+class XAIChatModel:
+    """LangChain-style chat model backed by xAI (Grok)."""
+
+    def __init__(self, model_name: str, temperature: float, reasoning_effort: Optional[str] = DEFAULT_XAI_REASONING_EFFORT) -> None:
+        self.model_name = model_name
+        self.temperature = temperature
+        self.reasoning_effort = reasoning_effort
+        self.key_manager = get_xai_key_manager()
+
+    def invoke(self, messages: List[BaseMessage]) -> AIMessage:
+        kwargs: dict = dict(
+            model=self.model_name,
+            messages=[{"role": _CHAT_ROLES[message.type], "content": message.content} for message in messages],
+            temperature=self.temperature,
+            max_completion_tokens=XAI_MAX_TOKENS,
+        )
+        if self.reasoning_effort:
+            kwargs["reasoning_effort"] = self.reasoning_effort
+        response = self.key_manager.chat_completion(**kwargs)
+        return AIMessage(content=_strip_think_tags(response.choices[0].message.content))
 
 
 class ZeroShotGenerator:
@@ -24,14 +60,26 @@ class ZeroShotGenerator:
                  args=None,
                  **kwargs) -> None:
         self.temperature = temperature
-        if model_name in ["gpt-3.5-turbo", "gpt-35-turbo-1106", "gpt-4", "gpt-4-0314", "gpt-4-0613", "gpt-4-1106-preview", "gemini-1.5-pro-preview-0409"]:
+        if is_xai_model(model_name):
+            reasoning_effort = getattr(args, "reasoning_effort", None) if args is not None else None
+            if reasoning_effort is None:
+                reasoning_effort = DEFAULT_XAI_REASONING_EFFORT
+            self.llm = XAIChatModel(
+                model_name=model_name,
+                temperature=self.temperature,
+                reasoning_effort=reasoning_effort,
+            )
+        elif model_name in AZURE_MODELS:
             self.llm = AzureChatOpenAI(
                 deployment_name=model_name,
                 openai_api_type="azure",
                 temperature=self.temperature,
                 **kwargs)
         else:
-            raise ValueError(f"Model name {model_name} not supported!")
+            raise ValueError(
+                f"Model name {model_name} not supported! "
+                "Use a grok-* / xai/* model (needs XAI_API_KEY) or an Azure model."
+            )
         self.benchmark_name = benchmark_name
         self.log_path = log_path
         self.validation_function = validation_function
@@ -88,9 +136,10 @@ class ZeroShotGenerator:
         os.makedirs(code_dir, exist_ok=True)
         general_code_path = os.path.join(code_dir, f"general_{step}.py")
         specific_code_path = os.path.join(code_dir, f"specific_{step}.py")
-        with open(general_code_path, "w") as f:
+        # LLM code may include unicode (e.g. →); Windows default cp1252 would crash.
+        with open(general_code_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(general_code)
-        with open(specific_code_path, "w") as f:
+        with open(specific_code_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(specific_code)
 
         print_with_color(content=f"{step}_general code save to {general_code_path}", color="GREEN")
