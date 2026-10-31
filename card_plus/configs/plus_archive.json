@@ -1,0 +1,13 @@
+{
+  "name": "+archive",
+  "description": "Archive of best version + rollback margin.",
+  "card_plus": {
+    "use_archive_rollback": true,
+    "use_subreward_stats": false,
+    "use_tpe_v2": false,
+    "score_last_k_evals": 3,
+    "rollback_margin": 0.05,
+    "score_final_version": true
+  },
+  "cli_extra": ["--use_archive_rollback"]
+}

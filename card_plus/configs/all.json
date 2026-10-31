@@ -1,0 +1,20 @@
+{
+  "name": "all",
+  "description": "All CARD+ features enabled.",
+  "card_plus": {
+    "use_archive_rollback": true,
+    "use_subreward_stats": true,
+    "use_tpe_v2": true,
+    "tpe_v2_mode": "warn",
+    "score_last_k_evals": 3,
+    "rollback_margin": 0.05,
+    "score_final_version": true
+  },
+  "cli_extra": [
+    "--use_archive_rollback",
+    "--use_subreward_stats",
+    "--use_tpe_v2",
+    "--tpe_v2_mode",
+    "warn"
+  ]
+}

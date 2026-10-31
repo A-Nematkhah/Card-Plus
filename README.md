@@ -88,7 +88,63 @@ The instructions are the same as "3. Reward Introspection and Reward Improvement
 6. Repeat the above iterative process...
 
 
+## CARD+
+
+Optional improvements on top of CARD. **All flags default to False** so baseline runs stay bit-identical.
+
+| Flag | Effect |
+|------|--------|
+| `--use_tpe_v2` | Dense-shaping / reward-hacking check (Spearman of mean-per-step return vs task progress, with sparse components removed). Mode `warn` (default): RL still runs; appends feedback. Mode `gate`: skip RL and send preference + dense-shaping feedback. |
+| `--use_subreward_stats` | Offline per-component stats + rule-based flags (`DOMINANT`, `NEG_CORR`, …) appended to feedback. |
+| `--use_archive_rollback` | Keep scored versions; roll back the next Coder prompt to the best code if success drops by more than `--rollback_margin`. At the end, prefer `card_plus_best/` over the last code. |
+
+Ready ablation configs (do not launch RL by themselves): `card_plus/configs/{baseline,plus_archive,plus_stats,plus_tpe2,all}.json`.
+
+Example (Meta-World one-step, same as baseline plus flags):
+
+```shell
+cd code_generation/self_reflection/
+python metaworld_exp_one_step.py --exp_name card --task_name drawer-open-v2 \
+  --use_return_check --threshold 0.8 --step 1 --log_path {log_path} \
+  --use_tpe_v2 --use_subreward_stats --use_archive_rollback
+```
+
+CrowdNav / Meta-World runners. Without `-CardPlus` the loop is unchanged. With it, all three flags are on and `--card_plus_max_step` is the last train round (no further Coder query).
+
+```powershell
+cd code_generation/self_reflection
+.\run_crowdnav_card.ps1 -CardPlus
+.\run_drawer_open_card.ps1 -CardPlus
+# optional: -TpeV2Mode gate
+# optional: -EvalBest   # after the loop, evaluate card_plus_best/specific.py with seed 1001
+```
+
+Final eval of the archived winner (selection seed 1, eval seed 1001):
+
+```shell
+python -m card_plus.eval_best --log_path {log_path} --benchmark metaworld --eval_seed 1001
+python -m card_plus.eval_best --log_path {log_path} --benchmark crowdnav --dry_run
+```
+
+TPE v2 on stored / synthetic trajs (oracle vs success-bonus-only, no RL):
+
+```shell
+python -m card_plus.tpe_v2_oracle
+python -m card_plus.tpe_v2_oracle --traj_pkl {rl_query_code_k.pkl}
+```
+
+Tests and dry-run (no RL / no LLM):
+
+```shell
+python -m pytest tests -k card_plus -q
+python -m card_plus.dry_run --all --run_dir logs/card_plus_dry_run
+```
+
+Design notes and Phase-0 map: see `CARD_PLUS_NOTES.md`.
+
+
 ## Acknowledgements
 
 Our code is based on [Text2Reward](https://github.com/xlang-ai/text2reward) and [Eureka](https://github.com/eureka-research/Eureka).
+
 

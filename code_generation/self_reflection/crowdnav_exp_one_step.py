@@ -27,6 +27,14 @@ from code_generation.self_reflection.crowdnav_env_utils import (
     make_env,
 )
 from code_generation.self_reflection.crowdnav_exp import mapping_dicts
+from card_plus.archive import RewardArchive
+from card_plus.baseline_feedback import assemble_baseline_feedback
+from card_plus.config import add_card_plus_arguments, card_plus_from_args
+from card_plus.hooks import (
+    apply_card_plus_after_baseline,
+    run_optional_tpe_v2,
+)
+from card_plus.tpe_v2 import should_skip_rl_for_tpe_v2
 from code_generation.self_reflection.utils import (
     Logger,
     SubRewardLog,
@@ -310,7 +318,9 @@ if __name__ == "__main__":
     parser.add_argument("--step", type=int)
     parser.add_argument("--exclude", type=str, default=None)
     parser.add_argument("--query_restart", type=bool, default=True)
+    add_card_plus_arguments(parser)
     args = parser.parse_args()
+    card_plus_cfg = card_plus_from_args(args)
 
     if args.log_path is None:
         formatted_time = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -354,19 +364,24 @@ if __name__ == "__main__":
             message_history = loaded_objects_dict["message_history"]
             trajectories_for_check_list = loaded_objects_dict["trajectories_for_check_list"]
 
-
             feedback_str = ""
             correct_count = 0
             correct_all = 0
             correct_rate = 1
             pass_flag = True
             check_feedback = ""
+            tpe_v2_result = None
+            rl_ran = True
+            reward_function = None
+            archive = RewardArchive(run_dir=args.log_path, cfg=card_plus_cfg) if card_plus_cfg.any_enabled else None
             if args.checkpoint:
                 checkpoint_file = os.path.join(args.log_path, f"{CHECKPOINT}_{args.step}.pkl")
                 with open(checkpoint_file, "rb") as f:
                     loaded_data = pickle.load(f)
                 correct_count, correct_all, correct_rate, pass_flag, check_feedback = loaded_data["return_check_info"]
                 learning_result, trajectories_for_check_need_update, diff_len_trajectories = loaded_data["train_info"]
+                tpe_v2_result = loaded_data.get("tpe_v2_result")
+                rl_ran = loaded_data.get("rl_ran", learning_result is not None)
                 print("=" * 20 + f"{args.exp_name} load checkpoint successfully!" + "=" * 20)
                 print(f"checkpoint path is: {checkpoint_file}" + "=" * 20)
             else:
@@ -385,28 +400,55 @@ if __name__ == "__main__":
                         benchmark_name=args.benchmark_name,
                         env=None,
                     )
-                learning_result, trajectories_for_check_need_update, diff_len_trajectories = train_and_eval(
-                    args=args,
-                    seed=args.seed,
-                    step=args.step,
-                    use_ground_truth_reward=False,
-                    specific_code=specific_code,
-                    specific_code_path=specific_code_path,
-                    load_model=args.load_model,
+                    if card_plus_cfg.use_tpe_v2:
+                        tpe_v2_result = run_optional_tpe_v2(
+                            card_plus_cfg,
+                            trajectories_for_check_list,
+                            pass_v1=pass_flag,
+                            acc_v1=float(correct_rate),
+                            task_name=args.task_name,
+                            reward_fn=reward_function,
+                            benchmark_name=args.benchmark_name,
+                        )
+
+                skip_rl = bool(
+                    card_plus_cfg.use_tpe_v2
+                    and tpe_v2_result is not None
+                    and should_skip_rl_for_tpe_v2(card_plus_cfg, tpe_v2_result)
                 )
+                if skip_rl:
+                    print(
+                        "CARD+ TPE v2 gate: dense-shaping check failed (hacked); "
+                        "skipping RL training for this version."
+                    )
+                    learning_result, trajectories_for_check_need_update, diff_len_trajectories = None, [], []
+                    rl_ran = False
+                else:
+                    learning_result, trajectories_for_check_need_update, diff_len_trajectories = train_and_eval(
+                        args=args,
+                        seed=args.seed,
+                        step=args.step,
+                        use_ground_truth_reward=False,
+                        specific_code=specific_code,
+                        specific_code_path=specific_code_path,
+                        load_model=args.load_model,
+                    )
+                    rl_ran = True
                 checkpoint_file = os.path.join(args.log_path, f"{CHECKPOINT}_{args.step}.pkl")
                 with open(checkpoint_file, "wb") as f:
                     pickle.dump(
                         {
                             "return_check_info": [correct_count, correct_all, correct_rate, pass_flag, check_feedback],
                             "train_info": [learning_result, trajectories_for_check_need_update, diff_len_trajectories],
+                            "tpe_v2_result": tpe_v2_result,
+                            "rl_ran": rl_ran,
                         },
                         f,
                     )
                     print("=" * 20 + f"{args.exp_name} checkpoint saved!" + "=" * 20)
                     print(f"load path is: {checkpoint_file}" + "=" * 20)
 
-                if args.train_seed_num > 1:
+                if rl_ran and args.train_seed_num > 1:
                     learning_result_list = [learning_result]
                     for seed in range(args.seed + 1, args.seed + args.train_seed_num):
                         learning_result_more, _, _ = train_and_eval(
@@ -424,52 +466,102 @@ if __name__ == "__main__":
                         save_path=os.path.join(os.path.dirname(specific_code_path), "evaluations_mean.npz"),
                     )
 
+            effective_pass = pass_flag
+            if (not rl_ran) and card_plus_cfg.use_tpe_v2 and card_plus_cfg.tpe_v2_mode == "gate":
+                effective_pass = False
+
             # Feedback must never discard a finished train/checkpoint; always emit rl_query pkl.
+            learning_result_feedback = ""
+            eval_feedback = ""
+            if rl_ran and learning_result is not None:
+                try:
+                    learning_result_feedback = get_learning_result_feedback_simple(
+                        learning_result=learning_result, log_point_num=args.log_point_num
+                    )
+                except Exception as exc:
+                    learning_result_feedback = f"learning-result feedback unavailable: {exc}\n"
+                    print_with_color(learning_result_feedback, "YELLOW")
+                try:
+                    eval_feedback = get_eval_feedback(
+                        trajectory_list=diff_len_trajectories,
+                        mapping_dicts=mapping_dicts,
+                        log_interval=args.log_interval,
+                        benchmark_name=args.benchmark_name,
+                    )
+                except Exception as exc:
+                    eval_feedback = f"trajectory feedback unavailable: {exc}\n"
+                    print_with_color(eval_feedback, "YELLOW")
             try:
-                learning_result_feedback = get_learning_result_feedback_simple(
-                    learning_result=learning_result, log_point_num=args.log_point_num
+                feedback_str, extend_pool = assemble_baseline_feedback(
+                    use_return_check=args.use_return_check,
+                    pass_flag=effective_pass,
+                    exclude=args.exclude,
+                    learning_result_feedback=learning_result_feedback,
+                    eval_feedback=eval_feedback,
+                    check_feedback=check_feedback,
                 )
-            except Exception as exc:
-                learning_result_feedback = f"learning-result feedback unavailable: {exc}\n"
-                print_with_color(learning_result_feedback, "YELLOW")
-            try:
-                eval_feedback = get_eval_feedback(
-                    trajectory_list=diff_len_trajectories,
-                    mapping_dicts=mapping_dicts,
-                    log_interval=args.log_interval,
-                    benchmark_name=args.benchmark_name,
-                )
-            except Exception as exc:
-                eval_feedback = f"trajectory feedback unavailable: {exc}\n"
-                print_with_color(eval_feedback, "YELLOW")
-            try:
-                if not args.use_return_check or pass_flag:
-                    if args.exclude == "process":
-                        feedback_str += eval_feedback
-                    elif args.exclude == "trajectory":
-                        feedback_str += learning_result_feedback
-                    else:
-                        feedback_str += "1." + learning_result_feedback + "\n"
-                        feedback_str += "2." + eval_feedback
-                    if not args.use_return_check:
-                        with open(os.path.join(os.path.dirname(specific_code_path), "no check.txt"), "w") as file:
-                            file.write("no check")
-                    if args.use_return_check and pass_flag:
-                        with open(os.path.join(os.path.dirname(specific_code_path), "check pass.txt"), "w") as file:
-                            file.write("check pass")
-                    trajectories_for_check_list.extend(trajectories_for_check_need_update)
-                else:
-                    if args.exclude == "preference":
-                        feedback_str += "1." + learning_result_feedback + "\n"
-                        feedback_str += "2." + eval_feedback
-                    else:
-                        feedback_str += check_feedback
+                if not args.use_return_check:
+                    with open(os.path.join(os.path.dirname(specific_code_path), "no check.txt"), "w") as file:
+                        file.write("no check")
+                elif effective_pass and rl_ran:
+                    with open(os.path.join(os.path.dirname(specific_code_path), "check pass.txt"), "w") as file:
+                        file.write("check pass")
+                elif not effective_pass:
                     with open(os.path.join(os.path.dirname(specific_code_path), "check fail.txt"), "w") as file:
-                        file.write("check fail")
+                        file.write("check fail" if pass_flag or rl_ran else "tpe_v2 gate fail")
+                if extend_pool and rl_ran:
+                    trajectories_for_check_list.extend(trajectories_for_check_need_update)
             except Exception as exc:
                 feedback_str += learning_result_feedback + "\n" + eval_feedback
                 print_with_color(f"feedback assembly fallback used: {exc}", "YELLOW")
 
+            if card_plus_cfg.any_enabled:
+                stats_trajs = (
+                    trajectories_for_check_need_update
+                    if rl_ran and trajectories_for_check_need_update
+                    else trajectories_for_check_list
+                )
+                if reward_function is None and args.use_return_check:
+                    external_call_reward_code = convert_function_external(
+                        reward_function_code=specific_code, benchmark_name=args.benchmark_name
+                    )
+                    load_reward_function(code=external_call_reward_code)
+                    reward_function = ContinuousTaskWrapper.compute_dense_reward
+
+                def _train_final(code: str):
+                    print(
+                        "CARD+ score_final_version: extra short-protocol training "
+                        f"for unscored last version (step={args.step})."
+                    )
+                    lr, _, _ = train_and_eval(
+                        args=args,
+                        seed=args.seed,
+                        step=args.step,
+                        use_ground_truth_reward=False,
+                        specific_code=code,
+                        specific_code_path=specific_code_path,
+                        load_model=False,
+                    )
+                    return lr
+
+                feedback_str = apply_card_plus_after_baseline(
+                    feedback_str,
+                    card_plus_cfg,
+                    archive=archive,
+                    iteration=args.step,
+                    reward_code=specific_code,
+                    trajs=stats_trajs,
+                    task_name=args.task_name,
+                    benchmark_name=args.benchmark_name,
+                    tpe_v2=tpe_v2_result,
+                    rl_ran=rl_ran,
+                    learning_result=learning_result,
+                    pass_v1=tpe_v2_result.pass_v1 if tpe_v2_result is not None else pass_flag,
+                    acc_v1=float(correct_rate),
+                    run_dir=args.log_path,
+                    reward_fn=reward_function,
+                    train_final_fn=_train_final,
+                )
 
             query_file_path = os.path.join(args.log_path, f"{RL_QUERY}_{args.step}.pkl")
             with open(query_file_path, "wb") as file:

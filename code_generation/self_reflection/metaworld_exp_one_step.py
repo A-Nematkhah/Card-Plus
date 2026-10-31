@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Dict, Tuple
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from stable_baselines3 import SAC
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor
 from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.logger import configure
 import metaworld.envs.mujoco.env_dict as _env_dict
@@ -29,6 +29,14 @@ import numpy as np
 from wandb.integration.sb3 import WandbCallback
 import wandb
 from metaworld_exp import mapping_dicts
+from card_plus.baseline_feedback import assemble_baseline_feedback
+from card_plus.config import add_card_plus_arguments, card_plus_from_args
+from card_plus.archive import RewardArchive
+from card_plus.hooks import (
+    apply_card_plus_after_baseline,
+    run_optional_tpe_v2,
+)
+from card_plus.tpe_v2 import should_skip_rl_for_tpe_v2
 
 LLM_RESPONSE="llm_response_code"
 RL_QUERY="rl_query_code"
@@ -161,7 +169,8 @@ def train_and_eval(args, seed, step, use_ground_truth_reward: bool, specific_cod
             os.system(f"cp -r {os.path.dirname(specific_code_path)}/*.py {wandb.run.dir}/reward_codes/{run.id}")
 
     # set up eval environment
-    eval_env = SubprocVecEnv([make_env(args, seed=seed, record_dir="logs/videos", is_eval=True,
+    VecEnvCls = DummyVecEnv if os.name == "nt" else SubprocVecEnv
+    eval_env = VecEnvCls([make_env(args, seed=seed, record_dir="logs/videos", is_eval=True,
                                        use_ground_truth_reward=use_ground_truth_reward) for i in range(args.eval_num)])
     eval_env = VecMonitor(eval_env)
     eval_env.seed(seed)
@@ -173,7 +182,7 @@ def train_and_eval(args, seed, step, use_ground_truth_reward: bool, specific_cod
     extra_eval_env.seed(seed)
     extra_eval_env.reset()
     # set up train environment
-    env = SubprocVecEnv([make_env(args, seed=seed, max_episode_steps=args.max_episode_steps, is_eval=False,
+    env = VecEnvCls([make_env(args, seed=seed, max_episode_steps=args.max_episode_steps, is_eval=False,
                                   use_ground_truth_reward=use_ground_truth_reward) for i in range(args.train_num)])
     env = VecMonitor(env)
     env.seed(seed)
@@ -255,7 +264,10 @@ if __name__ == '__main__':
     parser.add_argument('--task_name', type=str, default="drawer-open-v2", 
                         help="choose one task from: drawer-open-v2, drawer-close-v2, window-open-v2, window-close-v2, button-press-v2, sweep-into-v2, door-unlock-v2, door-close-v2, handle-press-v2, handle-press-side-v2")
     parser.add_argument('--log_path', type=str, default=None)
-    parser.add_argument('--llm_model_name', type=str, default="gpt-4-1106-preview")
+    parser.add_argument('--llm_model_name', type=str, default="gpt-4-1106-preview",
+                        help="Azure deployment name, or an xAI model such as grok-4.3")
+    parser.add_argument('--reasoning_effort', type=str, default=None,
+                        help="xAI reasoning effort: none/low/medium/high/xhigh")
     parser.add_argument('--temperature', type=float, default=0.7)
     parser.add_argument('--reflection_num', type=int, default=10)
 
@@ -295,7 +307,11 @@ if __name__ == '__main__':
     parser.add_argument('--exclude', type=str, default=None)
     parser.add_argument('--query_restart', type=bool, default=True)
 
+    # CARD+ (all default False / baseline-preserving)
+    add_card_plus_arguments(parser)
+
     args = parser.parse_args()
+    card_plus_cfg = card_plus_from_args(args)
 
     # log path to save result
     if args.log_path == None:
@@ -344,9 +360,16 @@ if __name__ == '__main__':
             feedback_str = ""
             # eval introspection
             correct_count = 0
+            correct_all = 0
             correct_rate = 1
             pass_flag = True
             check_feedback = ""
+            tpe_v2_result = None
+            rl_ran = True
+            rolled_back = False
+            rollback_notice = ""
+            reward_function = None
+            archive = RewardArchive(run_dir=args.log_path, cfg=card_plus_cfg) if card_plus_cfg.any_enabled else None
             if args.checkpoint:
                 # load from checkpoint
                 checkpoint_file = os.path.join(args.log_path, f"{CHECKPOINT}_{args.step}.pkl")
@@ -354,6 +377,8 @@ if __name__ == '__main__':
                     loaded_data = pickle.load(f)
                 correct_count, correct_all, correct_rate, pass_flag, check_feedback = loaded_data["return_check_info"]
                 learning_result, trajectories_for_check_need_update, diff_len_trajectories = loaded_data["train_info"]
+                tpe_v2_result = loaded_data.get("tpe_v2_result")
+                rl_ran = loaded_data.get("rl_ran", learning_result is not None)
                 print("="*20 + f"{args.exp_name} load checkpoint successfully!" + "="*20)
                 print(f"checkpoint path is: {checkpoint_file}" + "="*20)
             else:
@@ -371,26 +396,54 @@ if __name__ == '__main__':
                                             log_interval=args.log_interval,
                                             benchmark_name=args.benchmark_name,
                                             env=None)
-                # 2.2 eval no matter pass_flag is True or False
-                # train one seed in default
-                learning_result, trajectories_for_check_need_update, diff_len_trajectories = train_and_eval(args=args,
-                                                                seed=args.seed, step=args.step,
-                                                                use_ground_truth_reward=False,
-                                                                specific_code=specific_code,
-                                                                specific_code_path=specific_code_path,
-                                                                load_model=args.load_model)
+                    # CARD+ TPE v2 (opt-in): reuse offline re-eval on stored pool
+                    if card_plus_cfg.use_tpe_v2:
+                        tpe_v2_result = run_optional_tpe_v2(
+                            card_plus_cfg,
+                            trajectories_for_check_list,
+                            pass_v1=pass_flag,
+                            acc_v1=float(correct_rate),
+                            task_name=args.task_name,
+                            reward_fn=reward_function,
+                        )
+
+                skip_rl = bool(
+                    card_plus_cfg.use_tpe_v2
+                    and tpe_v2_result is not None
+                    and should_skip_rl_for_tpe_v2(card_plus_cfg, tpe_v2_result)
+                )
+                if skip_rl:
+                    print(
+                        "CARD+ TPE v2 gate: dense-shaping check failed (hacked); "
+                        "skipping RL training for this version."
+                    )
+                    learning_result, trajectories_for_check_need_update, diff_len_trajectories = None, [], []
+                    rl_ran = False
+                else:
+                    # 2.2 eval no matter pass_flag is True or False (baseline behavior)
+                    # train one seed in default
+                    learning_result, trajectories_for_check_need_update, diff_len_trajectories = train_and_eval(
+                                                                    args=args,
+                                                                    seed=args.seed, step=args.step,
+                                                                    use_ground_truth_reward=False,
+                                                                    specific_code=specific_code,
+                                                                    specific_code_path=specific_code_path,
+                                                                    load_model=args.load_model)
+                    rl_ran = True
 
                 checkpoint_file = os.path.join(args.log_path, f"{CHECKPOINT}_{args.step}.pkl")
                 with open(checkpoint_file, 'wb') as f:
                     pickle.dump({
                         "return_check_info": [correct_count, correct_all, correct_rate, pass_flag, check_feedback],
-                        "train_info": [learning_result, trajectories_for_check_need_update, diff_len_trajectories]
+                        "train_info": [learning_result, trajectories_for_check_need_update, diff_len_trajectories],
+                        "tpe_v2_result": tpe_v2_result,
+                        "rl_ran": rl_ran,
                     }, f)
                     print("="*20 + f"{args.exp_name} checkpoint saved!" + "="*20)
                     print(f"load path is: {checkpoint_file}" + "="*20)
 
                 # only for eval performance, not for feedback
-                if args.train_seed_num > 1:
+                if rl_ran and args.train_seed_num > 1:
                     learning_result_list = [learning_result]
                     for seed in range(args.seed+1, args.seed+args.train_seed_num):
                         learning_result_more, _, _ = train_and_eval(args=args,
@@ -404,37 +457,90 @@ if __name__ == '__main__':
                                                                     save_path=os.path.join(os.path.dirname(specific_code_path),
                                                                                     "evaluations_mean.npz"))
             # after load checkpoint or train
-            learning_result_feedback = get_learning_result_feedback_simple(learning_result=learning_result, log_point_num=args.log_point_num)
-            eval_feedback = get_eval_feedback(trajectory_list=diff_len_trajectories,
-                                    mapping_dicts=mapping_dicts,
-                                    log_interval=args.log_interval)
-            if not args.use_return_check or pass_flag:
-                # dont check or check pass
-                if args.exclude == "process":
-                    feedback_str += eval_feedback
-                elif args.exclude == "trajectory":
-                    feedback_str += learning_result_feedback
-                else:
-                    feedback_str += "1." + learning_result_feedback + "\n"
-                    feedback_str += "2." + eval_feedback
+            # Preference / gate-skip path: treat like TPE fail for feedback assembly when RL skipped by v2 gate
+            effective_pass = pass_flag
+            if (not rl_ran) and card_plus_cfg.use_tpe_v2 and card_plus_cfg.tpe_v2_mode == "gate":
+                effective_pass = False
 
-                if not args.use_return_check:
-                    with open(os.path.join(os.path.dirname(specific_code_path), "no check.txt"), "w") as file:
-                        file.write("no check")
-                if args.use_return_check and pass_flag:
-                    with open(os.path.join(os.path.dirname(specific_code_path), "check pass.txt"), "w") as file:
-                        file.write("check pass")
-                # update traj only check pass
+            if rl_ran and learning_result is not None:
+                learning_result_feedback = get_learning_result_feedback_simple(learning_result=learning_result, log_point_num=args.log_point_num)
+                eval_feedback = get_eval_feedback(trajectory_list=diff_len_trajectories,
+                                        mapping_dicts=mapping_dicts,
+                                        log_interval=args.log_interval)
+            else:
+                learning_result_feedback = ""
+                eval_feedback = ""
+
+            # Baseline (git 6e1df1c) assembly. Gate-skip uses effective_pass so
+            # preference feedback is sent when RL was skipped; flags-False never skips.
+            baseline_pass = effective_pass
+            feedback_str, extend_pool = assemble_baseline_feedback(
+                use_return_check=args.use_return_check,
+                pass_flag=baseline_pass,
+                exclude=args.exclude,
+                learning_result_feedback=learning_result_feedback,
+                eval_feedback=eval_feedback,
+                check_feedback=check_feedback,
+            )
+            if not args.use_return_check:
+                with open(os.path.join(os.path.dirname(specific_code_path), "no check.txt"), "w") as file:
+                    file.write("no check")
+            elif baseline_pass and rl_ran:
+                with open(os.path.join(os.path.dirname(specific_code_path), "check pass.txt"), "w") as file:
+                    file.write("check pass")
+            elif not baseline_pass:
+                with open(os.path.join(os.path.dirname(specific_code_path), "check fail.txt"), "w") as file:
+                    file.write("check fail" if pass_flag or rl_ran else "tpe_v2 gate fail")
+            if extend_pool and rl_ran:
                 trajectories_for_check_list.extend(trajectories_for_check_need_update)
 
-            else:
-                if args.exclude == "preference":
-                    feedback_str += "1." + learning_result_feedback + "\n"
-                    feedback_str += "2." + eval_feedback
-                else:
-                    feedback_str += check_feedback
-                with open(os.path.join(os.path.dirname(specific_code_path), "check fail.txt"), "w") as file:
-                    file.write("check fail")
+            if card_plus_cfg.any_enabled:
+                stats_trajs = (
+                    trajectories_for_check_need_update
+                    if rl_ran and trajectories_for_check_need_update
+                    else trajectories_for_check_list
+                )
+                if reward_function is None and args.use_return_check:
+                    external_call_reward_code = convert_function_external(
+                        reward_function_code=specific_code, benchmark_name=args.benchmark_name
+                    )
+                    load_reward_function(code=external_call_reward_code)
+                    reward_function = ContinuousTaskWrapper.compute_dense_reward
+
+                def _train_final(code: str):
+                    print(
+                        "CARD+ score_final_version: extra short-protocol training "
+                        f"for unscored last version (step={args.step})."
+                    )
+                    lr, _, _ = train_and_eval(
+                        args=args,
+                        seed=args.seed,
+                        step=args.step,
+                        use_ground_truth_reward=False,
+                        specific_code=code,
+                        specific_code_path=specific_code_path,
+                        load_model=False,
+                    )
+                    return lr
+
+                feedback_str = apply_card_plus_after_baseline(
+                    feedback_str,
+                    card_plus_cfg,
+                    archive=archive,
+                    iteration=args.step,
+                    reward_code=specific_code,
+                    trajs=stats_trajs,
+                    task_name=args.task_name,
+                    benchmark_name=args.benchmark_name,
+                    tpe_v2=tpe_v2_result,
+                    rl_ran=rl_ran,
+                    learning_result=learning_result,
+                    pass_v1=tpe_v2_result.pass_v1 if tpe_v2_result is not None else pass_flag,
+                    acc_v1=float(correct_rate),
+                    run_dir=args.log_path,
+                    reward_fn=reward_function,
+                    train_final_fn=_train_final,
+                )
 
             # save data
             query_file_path = os.path.join(args.log_path, f"{RL_QUERY}_{args.step}.pkl")

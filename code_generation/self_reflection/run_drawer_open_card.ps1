@@ -2,7 +2,12 @@
 # step0 -> query0 -> step1 (train) -> query1 -> step2 (train) -> query2 -> step3 (train)
 param(
     [string]$ResumeLogPath = "",
-    [int]$StartStep = 0
+    [int]$StartStep = 0,
+    [int]$TrainRounds = 3,
+    [switch]$CardPlus,
+    [ValidateSet("warn","gate")]
+    [string]$TpeV2Mode = "warn",
+    [switch]$EvalBest
 )
 $ErrorActionPreference = "Stop"
 $repo = "D:\Thesis\Implementation\card-v1.0"
@@ -35,8 +40,19 @@ $common = @(
     "--train_seed_num", "1",
     "--n_eval_episodes", "10",
     "--use_return_check",
-    "--threshold", "0.8"
+    "--threshold", "0.8",
+    "--card_plus_max_step", "$TrainRounds"
 )
+if ($CardPlus) {
+    $common += @(
+        "--use_tpe_v2",
+        "--tpe_v2_mode", "$TpeV2Mode",
+        "--use_subreward_stats",
+        "--use_archive_rollback"
+    )
+    Write-Host "CARD+ enabled: TPE v2 ($TpeV2Mode) + sub-reward stats + archive/rollback"
+    Write-Host "Final step (no further Coder query) = $TrainRounds"
+}
 
 function Invoke-Card([string[]]$arguments, [string]$name) {
     Write-Host ""
@@ -56,6 +72,7 @@ if ($ResumeLogPath -ne "") {
     $runLogPath = $ResumeLogPath
     Write-Host "Resuming LOG_PATH=$runLogPath from step $StartStep"
 } else {
+    # Create the run dir in PowerShell so we never have to rediscover paths with '=' in them.
     $stamp = Get-Date -Format "yyyy-MM-dd-HH-mm-ss"
     $runLogPath = Join-Path $here "logs\metaworld\grok-4.3\t=0.7\zero-shot\SAC_1\drawer-open-v2\card\exclude=None\$stamp"
     New-Item -ItemType Directory -Force -Path $runLogPath | Out-Null
@@ -86,6 +103,17 @@ if ($StartStep -le 3) {
     $q2 = Join-Path $runLogPath "rl_query_code_2.pkl"
     Invoke-Card @("query_llm_metaworld.py", "--rl_question_file_path", $q2) "query2"
     Invoke-Card (@("metaworld_exp_one_step.py") + $common + @("--step", "3", "--log_path", $runLogPath)) "step3"
+}
+
+if ($EvalBest) {
+    if (-not $CardPlus) { Write-Host "WARNING: -EvalBest without -CardPlus (need card_plus_best/specific.py)" }
+    Invoke-Card @(
+        "-m", "card_plus.eval_best",
+        "--log_path", $runLogPath,
+        "--benchmark", "metaworld",
+        "--eval_seed", "1001",
+        "--selection_seed", "1"
+    ) "eval_best"
 }
 
 Write-Host "DONE $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"

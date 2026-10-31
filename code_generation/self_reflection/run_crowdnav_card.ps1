@@ -11,7 +11,11 @@ param(
     [int]$EvalNum = 4,
     [ValidateSet("auto","dummy","subproc")]
     [string]$VecEnv = "auto",
-    [switch]$Smoke
+    [switch]$Smoke,
+    [switch]$CardPlus,
+    [ValidateSet("warn","gate")]
+    [string]$TpeV2Mode = "warn",
+    [switch]$EvalBest
 )
 $ErrorActionPreference = "Stop"
 $repo = "D:\Thesis\Implementation\card-v1.0"
@@ -54,9 +58,19 @@ $common = @(
     "--trajectory_num", "20",
     "--log_interval", "10",
     "--use_return_check",
-    "--threshold", "0.8"
+    "--threshold", "0.8",
+    "--card_plus_max_step", "$TrainRounds"
 )
-Write-Host "TrainNum=$TrainNum EvalNum=$EvalNum VecEnv=$VecEnv"
+if ($CardPlus) {
+    $common += @(
+        "--use_tpe_v2",
+        "--tpe_v2_mode", "$TpeV2Mode",
+        "--use_subreward_stats",
+        "--use_archive_rollback"
+    )
+    Write-Host "CARD+ enabled: TPE v2 ($TpeV2Mode) + sub-reward stats + archive/rollback"
+}
+Write-Host "TrainNum=$TrainNum EvalNum=$EvalNum VecEnv=$VecEnv CardPlus=$CardPlus"
 
 function Invoke-Card([string[]]$arguments, [string]$name) {
     Write-Host ""
@@ -89,6 +103,9 @@ if (-not (Test-Path -LiteralPath $runLogPath)) {
 Write-Host "LOG_PATH=$runLogPath"
 Set-Content -LiteralPath (Join-Path $here "last_crowdnav_logpath.txt") -Value $runLogPath
 
+# For train round k=1..TrainRounds:
+#   query(k-1) generates code_(k-1), then step k trains it.
+# Resume: StartStep=1 skips query0 and reruns step1 (matches drawer-open).
 for ($k = 1; $k -le $TrainRounds; $k++) {
     $queryStep = $k - 1
     if ($StartStep -le $queryStep) {
@@ -103,6 +120,7 @@ for ($k = 1; $k -le $TrainRounds; $k++) {
     }
     if ($StartStep -le $k) {
         $stepArgs = @("crowdnav_exp_one_step.py") + $common + @("--step", "$k", "--log_path", $runLogPath)
+        # If train already finished and checkpoint exists, skip re-training.
         $ckpt = Join-Path $runLogPath "checkpoint_$k.pkl"
         if (Test-Path -LiteralPath $ckpt) {
             $stepArgs += "--checkpoint"
@@ -110,6 +128,17 @@ for ($k = 1; $k -le $TrainRounds; $k++) {
         }
         Invoke-Card $stepArgs "step$k"
     }
+}
+
+if ($EvalBest) {
+    if (-not $CardPlus) { Write-Host "WARNING: -EvalBest without -CardPlus (need card_plus_best/specific.py)" }
+    Invoke-Card @(
+        "-m", "card_plus.eval_best",
+        "--log_path", $runLogPath,
+        "--benchmark", "crowdnav",
+        "--eval_seed", "1001",
+        "--selection_seed", "1"
+    ) "eval_best"
 }
 
 Write-Host "DONE $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"

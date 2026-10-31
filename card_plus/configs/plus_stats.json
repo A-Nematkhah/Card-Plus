@@ -1,0 +1,10 @@
+{
+  "name": "+stats",
+  "description": "Offline sub-reward statistics feedback.",
+  "card_plus": {
+    "use_archive_rollback": false,
+    "use_subreward_stats": true,
+    "use_tpe_v2": false
+  },
+  "cli_extra": ["--use_subreward_stats"]
+}

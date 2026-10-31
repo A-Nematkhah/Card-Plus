@@ -1,0 +1,13 @@
+{
+  "name": "+tpe2",
+  "description": "TPE v2 dense-shaping check (warn mode keeps RL).",
+  "card_plus": {
+    "use_archive_rollback": false,
+    "use_subreward_stats": false,
+    "use_tpe_v2": true,
+    "tpe_v2_mode": "warn",
+    "tpe_v2_tau_dense": 0.3,
+    "tpe_v2_min_trajs": 10
+  },
+  "cli_extra": ["--use_tpe_v2", "--tpe_v2_mode", "warn"]
+}
