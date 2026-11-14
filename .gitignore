@@ -160,3 +160,14 @@ third_party/Python-RVO2/build/
 third_party/Python-RVO2/*.egg-info/
 third_party/Python-RVO2/**/*.pyd
 third_party/Python-RVO2/**/*.so
+
+# Local run artifacts / tooling (not part of CARD+ source)
+.cursor/
+logs/
+code_generation/self_reflection/logs/
+code_generation/self_reflection/gifs/
+code_generation/self_reflection/*.gif
+code_generation/self_reflection/MUJOCO_LOG.TXT
+code_generation/self_reflection/last_*_logpath.txt
+third_party/
+xai_keys.json
