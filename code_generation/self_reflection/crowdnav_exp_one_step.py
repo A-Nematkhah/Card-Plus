@@ -35,6 +35,14 @@ from card_plus.hooks import (
     run_optional_tpe_v2,
 )
 from card_plus.tpe_v2 import should_skip_rl_for_tpe_v2
+from card_triage_adapter import (
+    add_triage_arguments,
+    after_iteration as triage_after_iteration,
+    before_train as triage_before_train,
+    last_card_plus_rolled_back,
+    score_from_learning_result,
+    triage_flags_from_args,
+)
 from code_generation.self_reflection.utils import (
     Logger,
     SubRewardLog,
@@ -319,8 +327,10 @@ if __name__ == "__main__":
     parser.add_argument("--exclude", type=str, default=None)
     parser.add_argument("--query_restart", type=bool, default=True)
     add_card_plus_arguments(parser)
+    add_triage_arguments(parser)
     args = parser.parse_args()
     card_plus_cfg = card_plus_from_args(args)
+    triage_flags = triage_flags_from_args(args)
 
     if args.log_path is None:
         formatted_time = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -373,6 +383,7 @@ if __name__ == "__main__":
             tpe_v2_result = None
             rl_ran = True
             reward_function = None
+            triage_pre = None
             archive = RewardArchive(run_dir=args.log_path, cfg=card_plus_cfg) if card_plus_cfg.any_enabled else None
             if args.checkpoint:
                 checkpoint_file = os.path.join(args.log_path, f"{CHECKPOINT}_{args.step}.pkl")
@@ -385,6 +396,15 @@ if __name__ == "__main__":
                 print("=" * 20 + f"{args.exp_name} load checkpoint successfully!" + "=" * 20)
                 print(f"checkpoint path is: {checkpoint_file}" + "=" * 20)
             else:
+                if triage_flags.any_enabled:
+                    triage_pre = triage_before_train(
+                        triage_flags,
+                        reward_code=specific_code,
+                        args=args,
+                        run_dir=args.log_path,
+                        trajs=trajectories_for_check_list,
+                        train_max_steps=args.train_max_steps,
+                    )
                 if args.use_return_check and trajectories_for_check_list:
                     external_call_reward_code = convert_function_external(
                         reward_function_code=specific_code, benchmark_name=args.benchmark_name
@@ -416,13 +436,32 @@ if __name__ == "__main__":
                     and tpe_v2_result is not None
                     and should_skip_rl_for_tpe_v2(card_plus_cfg, tpe_v2_result)
                 )
-                if skip_rl:
+                if triage_pre is not None and triage_pre.skip_rl:
+                    skip_rl = True
                     print(
-                        "CARD+ TPE v2 gate: dense-shaping check failed (hacked); "
-                        "skipping RL training for this version."
+                        "reward_triage: skipping RL "
+                        f"({', '.join(triage_pre.reasons)}; "
+                        f"steps_saved_est={triage_pre.steps_saved_est})"
                     )
-                    learning_result, trajectories_for_check_need_update, diff_len_trajectories = None, [], []
-                    rl_ran = False
+                if skip_rl:
+                    if triage_pre is not None and triage_pre.cache_hit and triage_pre.cached_payload:
+                        learning_result = triage_pre.cached_payload.get("learning_result")
+                        trajectories_for_check_need_update, diff_len_trajectories = [], []
+                        rl_ran = False
+                    elif (
+                        card_plus_cfg.use_tpe_v2
+                        and tpe_v2_result is not None
+                        and should_skip_rl_for_tpe_v2(card_plus_cfg, tpe_v2_result)
+                    ):
+                        print(
+                            "CARD+ TPE v2 gate: dense-shaping check failed (hacked); "
+                            "skipping RL training for this version."
+                        )
+                        learning_result, trajectories_for_check_need_update, diff_len_trajectories = None, [], []
+                        rl_ran = False
+                    else:
+                        learning_result, trajectories_for_check_need_update, diff_len_trajectories = None, [], []
+                        rl_ran = False
                 else:
                     learning_result, trajectories_for_check_need_update, diff_len_trajectories = train_and_eval(
                         args=args,
@@ -563,6 +602,32 @@ if __name__ == "__main__":
                     train_final_fn=_train_final,
                 )
 
+            triage_stop = False
+            if triage_flags.any_enabled:
+                success_score = score_from_learning_result(learning_result)
+                post = triage_after_iteration(
+                    triage_flags,
+                    reward_code=specific_code,
+                    args=args,
+                    run_dir=args.log_path,
+                    iteration=args.step,
+                    rl_ran=rl_ran,
+                    learning_result=learning_result,
+                    success_score=success_score,
+                    n_eval_episodes=args.n_eval_episodes,
+                    rolled_back=last_card_plus_rolled_back(args.log_path),
+                    archive_rollback_enabled=bool(card_plus_cfg.use_archive_rollback),
+                    train_max_steps=args.train_max_steps,
+                    cache_key=triage_pre.cache_key if triage_pre is not None else None,
+                    env_metrics={"success": success_score},
+                )
+                triage_stop = bool(post.should_stop)
+                if triage_stop:
+                    print(
+                        "reward_triage: plateau stop requested "
+                        f"(iteration={args.step}; reasons={post.reasons})"
+                    )
+
             query_file_path = os.path.join(args.log_path, f"{RL_QUERY}_{args.step}.pkl")
             with open(query_file_path, "wb") as file:
                 pickle.dump(
@@ -572,6 +637,7 @@ if __name__ == "__main__":
                         "message_history": message_history,
                         "trajectories_for_check_list": trajectories_for_check_list,
                         "feedback_str": feedback_str,
+                        "triage_stop": triage_stop if triage_flags.any_enabled else False,
                     },
                     file,
                 )
