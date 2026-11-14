@@ -171,3 +171,6 @@ code_generation/self_reflection/MUJOCO_LOG.TXT
 code_generation/self_reflection/last_*_logpath.txt
 third_party/
 xai_keys.json
+
+code_generation/self_reflection/bench_crowdnav_fps.py
+code_generation/self_reflection/plot_crowdnav_run.py
