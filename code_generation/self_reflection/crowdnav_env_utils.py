@@ -36,14 +36,14 @@ CROWDNAV_TASKS = {
     # Default = EvoNav "with randomization" setting.
     "circle-crossing-v0": {
         "instruction": (
-            "Navigate a holonomic robot from a random start to a random goal through a dense circle-crossing crowd "
-            "(CrowdNav++ / EvoNav setting: 20 pedestrians on a ~12×12 m workspace). "
+            "Navigate a holonomic robot from a random start to a random goal through a circle-crossing crowd "
+            "(CrowdNav++ / EvoNav setting: 5 pedestrians on a ~12×12 m workspace). "
             "Reach the goal without colliding with any pedestrian. Keep a comfortable clearance; do not freeze in place "
             "or take a long detour when a shorter safe path exists. "
             "Humans are ORCA-controlled and react to the robot. "
             "The task is finished successfully when the robot arrives within its own radius of the goal without any collision."
         ),
-        "human_num": 20,
+        "human_num": 5,
         "circle_radius": EVONAV_CIRCLE_RADIUS,
         "arena_size": EVONAV_ARENA_SIZE,
         "time_limit": 50.0,
@@ -52,7 +52,7 @@ CROWDNAV_TASKS = {
         "collision_penalty": -20.0,
         "discomfort_dist": 0.25,
         "discomfort_penalty_factor": 10.0,
-        "robot_visible": True,
+        "robot_visible": False,
         "humans_policy": "orca",
         # with_random | no_random  (EvoNav Table 1 two columns)
         "randomization": "with_random",
@@ -60,13 +60,23 @@ CROWDNAV_TASKS = {
 }
 
 # LLM abstract names -> expressions over ``obs`` (after RewardFunctionConverter).
+# Longer keys are applied first so aliases like ``self.goal_distance`` do not
+# break ``self.robot.goal_distance``.
+_GOAL_DIST = "float(np.linalg.norm(obs[0:2] - obs[4:6]))"
+_SPEED = "float(np.linalg.norm(obs[2:4]))"
 mapping_dicts = {
     "self.robot.position": "obs[0:2]",
     "self.robot.velocity": "obs[2:4]",
     "self.robot.goal_position": "obs[4:6]",
     "self.robot.radius": "obs[6]",
-    "self.robot.goal_distance": "float(np.linalg.norm(obs[0:2] - obs[4:6]))",
-    "self.robot.speed": "float(np.linalg.norm(obs[2:4]))",
+    "self.robot.goal_distance": _GOAL_DIST,
+    "self.robot.speed": _SPEED,
+    # Common LLM shortcuts (must be shorter than the self.robot.* forms above).
+    "self.goal_distance": _GOAL_DIST,
+    "self.goal_position": "obs[4:6]",
+    "self.position": "obs[0:2]",
+    "self.velocity": "obs[2:4]",
+    "self.speed": _SPEED,
     "self.min_separation": "obs[7]",
     "self.nearest_human.distance": "obs[8]",
     "self.nearest_human.relative_position": "obs[9:11]",
@@ -447,6 +457,9 @@ class ContinuousTaskWrapper(gym.Wrapper):
     def step(self, action):
         ob, rew, done, info = super().step(action)
         if not self.use_ground_truth_reward:
+            # ``self.pre_obs`` is the previous flat obs (for delta goal-distance).
+            if getattr(self, "pre_obs", None) is None:
+                self.pre_obs = ob
             result = self.compute_dense_reward(action, ob)
             if isinstance(result, tuple):
                 rew, rew_dict = result
@@ -456,6 +469,7 @@ class ContinuousTaskWrapper(gym.Wrapper):
                 rew = result
         info["ground_truth_reward"] = rew
         self._elapsed_steps += 1
+        self.pre_obs = ob
         # Keep simulator terminals (success / collision). Only force-end on timeout.
         reached = bool(info.get("success", 0)) or bool(info.get("is_success", 0))
         collided = bool(info.get("collided", 0))

@@ -1,11 +1,11 @@
-# CARD loop for CrowdNav++ circle-crossing-v0:
+﻿# CARD loop for CrowdNav++ circle-crossing-v0:
 # step0 -> query0 -> step1 (train) -> query1 -> ... -> query(N-1) -> stepN (train)
 # TrainRounds = number of SAC train stages (default 5 => ends at step5).
 param(
     [string]$ResumeLogPath = "",
     [int]$StartStep = 0,
     [int]$TrainRounds = 5,
-    [int]$TrainMaxSteps = 200000,
+    [int]$TrainMaxSteps = 100000,
     [int]$EvalFreq = 5000,
     [int]$TrainNum = 4,
     [int]$EvalNum = 4,
@@ -15,11 +15,17 @@ param(
     [switch]$CardPlus,
     [ValidateSet("warn","gate")]
     [string]$TpeV2Mode = "warn",
+    # Offline dataset gate (optimal defaults). On unless -NoDatasetRescore.
+    [switch]$NoDatasetRescore,
+    [ValidateSet("warn","gate")]
+    [string]$DatasetMode = "gate",
+    [string]$DatasetPath = "",
     [switch]$EvalBest
 )
 $ErrorActionPreference = "Stop"
-$repo = "D:\Thesis\Implementation\card-v1.0"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+# repo root = .../Card-plus (two levels above self_reflection/)
+$repo = (Resolve-Path (Join-Path $here "..\..")).Path
 Set-Location $here
 
 if ($TrainRounds -lt 1) { throw "TrainRounds must be >= 1" }
@@ -30,16 +36,22 @@ $env:PYTHONIOENCODING = "utf-8"
 if (-not $env:XAI_KEYS_PATH) {
     $env:XAI_KEYS_PATH = Join-Path $repo "xai_keys.json"
 }
-if (-not $env:XAI_PROXY) {
-    $env:XAI_PROXY = "http://127.0.0.1:10809"
-}
+# Do not force a local proxy; set XAI_PROXY yourself if you need one.
 
 if ($Smoke) {
     $TrainMaxSteps = 2000
     $EvalFreq = 1000
 }
 
-$py = "C:\Users\AmirHossein\miniconda3\envs\card\python.exe"
+if ($env:CARD_PYTHON -and (Test-Path -LiteralPath $env:CARD_PYTHON)) {
+    $py = $env:CARD_PYTHON
+} else {
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $cmd) { throw "python not found. Set CARD_PYTHON to your card env interpreter." }
+    $py = $cmd.Source
+}
+Write-Host "REPO=$repo"
+Write-Host "PYTHON=$py"
 $common = @(
     "--exp_name", "card",
     "--task_name", "circle-crossing-v0",
@@ -69,6 +81,31 @@ if ($CardPlus) {
         "--use_archive_rollback"
     )
     Write-Host "CARD+ enabled: TPE v2 ($TpeV2Mode) + sub-reward stats + archive/rollback"
+}
+# Optimal dataset gate: keep only rewards that separate success/collision/timeout.
+if (-not $NoDatasetRescore) {
+    if ($DatasetPath -eq "") {
+        $DatasetPath = Join-Path $repo "logs\crowdnav_ds_v1"
+    }
+    if (Test-Path -LiteralPath $DatasetPath) {
+        $common += @(
+            "--use_dataset_rescore",
+            "--dataset_path", "$DatasetPath",
+            "--dataset_mode", "$DatasetMode",
+            "--dataset_min_success_collided", "0.85",
+            "--dataset_min_success_timeout", "0.80",
+            "--dataset_min_timeout_collided", "0.60",
+            "--dataset_min_progress_auc", "0.75",
+            "--dataset_min_composite", "0.65",
+            "--dataset_min_anti_hack", "0.55",
+            "--dataset_min_separation", "0.55",
+            "--llm_candidates", "3",
+            "--llm_candidate_retries", "5"
+        )
+        Write-Host "Dataset gate ON ($DatasetMode): $DatasetPath (LLM 3 candidates, pick best)"
+    } else {
+        Write-Host "WARNING: dataset not found at $DatasetPath — gate disabled"
+    }
 }
 Write-Host "TrainNum=$TrainNum EvalNum=$EvalNum VecEnv=$VecEnv CardPlus=$CardPlus"
 

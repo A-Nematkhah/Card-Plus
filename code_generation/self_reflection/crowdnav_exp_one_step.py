@@ -30,19 +30,18 @@ from code_generation.self_reflection.crowdnav_exp import mapping_dicts
 from card_plus.archive import RewardArchive
 from card_plus.baseline_feedback import assemble_baseline_feedback
 from card_plus.config import add_card_plus_arguments, card_plus_from_args
+from card_plus.dataset.gate import (
+    add_dataset_gate_arguments,
+    dataset_gate_from_args,
+    run_dataset_gate,
+    should_skip_rl_for_dataset_gate,
+)
+from card_plus.dataset.reward_static import check_reward_code_static
 from card_plus.hooks import (
     apply_card_plus_after_baseline,
     run_optional_tpe_v2,
 )
 from card_plus.tpe_v2 import should_skip_rl_for_tpe_v2
-from card_triage_adapter import (
-    add_triage_arguments,
-    after_iteration as triage_after_iteration,
-    before_train as triage_before_train,
-    last_card_plus_rolled_back,
-    score_from_learning_result,
-    triage_flags_from_args,
-)
 from code_generation.self_reflection.utils import (
     Logger,
     SubRewardLog,
@@ -62,6 +61,9 @@ CHECKPOINT = "checkpoint"
 
 
 def env_is_valid(reward_code_str, args):
+    static_ok, static_reasons = check_reward_code_static(reward_code_str)
+    if not static_ok:
+        return False, "static reward check failed: " + "; ".join(static_reasons)
     try:
         train_env = make_env(
             args,
@@ -89,7 +91,8 @@ def env_is_valid(reward_code_str, args):
 
             load_reward_function(code=external_reward_code)
             external_reward_func = ContinuousTaskWrapper.compute_dense_reward
-            result = external_reward_func(action=action, obs=obs)
+            # CrowdNav external form uses pre_obs (former self.pre_obs) for delta progress.
+            result = external_reward_func(action=action, obs=obs, pre_obs=obs)
             assert isinstance(result, tuple), "external_reward_func return type is not tuple"
     except Exception:
         return False, traceback.format_exc()
@@ -308,7 +311,7 @@ if __name__ == "__main__":
                         help="Run SubRewardLog every N eval periods (higher => higher train FPS)")
     parser.add_argument("--eval_freq", type=int, default=5_000)
     parser.add_argument("--max_episode_steps", type=int, default=200)
-    parser.add_argument("--train_max_steps", type=int, default=200_000)
+    parser.add_argument("--train_max_steps", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--benchmark_name", type=str, default="crowdnav")
     parser.add_argument("--max_try_num", type=int, default=10)
@@ -327,10 +330,10 @@ if __name__ == "__main__":
     parser.add_argument("--exclude", type=str, default=None)
     parser.add_argument("--query_restart", type=bool, default=True)
     add_card_plus_arguments(parser)
-    add_triage_arguments(parser)
+    add_dataset_gate_arguments(parser)
     args = parser.parse_args()
     card_plus_cfg = card_plus_from_args(args)
-    triage_flags = triage_flags_from_args(args)
+    dataset_gate_cfg = dataset_gate_from_args(args)
 
     if args.log_path is None:
         formatted_time = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -381,9 +384,9 @@ if __name__ == "__main__":
             pass_flag = True
             check_feedback = ""
             tpe_v2_result = None
+            dataset_gate_result = None
             rl_ran = True
             reward_function = None
-            triage_pre = None
             archive = RewardArchive(run_dir=args.log_path, cfg=card_plus_cfg) if card_plus_cfg.any_enabled else None
             if args.checkpoint:
                 checkpoint_file = os.path.join(args.log_path, f"{CHECKPOINT}_{args.step}.pkl")
@@ -396,15 +399,17 @@ if __name__ == "__main__":
                 print("=" * 20 + f"{args.exp_name} load checkpoint successfully!" + "=" * 20)
                 print(f"checkpoint path is: {checkpoint_file}" + "=" * 20)
             else:
-                if triage_flags.any_enabled:
-                    triage_pre = triage_before_train(
-                        triage_flags,
-                        reward_code=specific_code,
-                        args=args,
-                        run_dir=args.log_path,
-                        trajs=trajectories_for_check_list,
-                        train_max_steps=args.train_max_steps,
-                    )
+                if dataset_gate_cfg.enabled:
+                    try:
+                        dataset_gate_result = run_dataset_gate(
+                            dataset_gate_cfg,
+                            reward_code=specific_code,
+                            run_dir=args.log_path,
+                            step=args.step,
+                        )
+                    except Exception as exc:
+                        print_with_color(f"dataset gate failed (continuing without it): {exc}", "YELLOW")
+                        dataset_gate_result = None
                 if args.use_return_check and trajectories_for_check_list:
                     external_call_reward_code = convert_function_external(
                         reward_function_code=specific_code, benchmark_name=args.benchmark_name
@@ -436,19 +441,15 @@ if __name__ == "__main__":
                     and tpe_v2_result is not None
                     and should_skip_rl_for_tpe_v2(card_plus_cfg, tpe_v2_result)
                 )
-                if triage_pre is not None and triage_pre.skip_rl:
+                if should_skip_rl_for_dataset_gate(dataset_gate_result):
                     skip_rl = True
                     print(
-                        "reward_triage: skipping RL "
-                        f"({', '.join(triage_pre.reasons)}; "
-                        f"steps_saved_est={triage_pre.steps_saved_est})"
+                        "dataset_gate: skipping RL "
+                        f"(composite={dataset_gate_result.composite:.4f}; "
+                        f"{', '.join(dataset_gate_result.reasons) or 'keep=False'})"
                     )
                 if skip_rl:
-                    if triage_pre is not None and triage_pre.cache_hit and triage_pre.cached_payload:
-                        learning_result = triage_pre.cached_payload.get("learning_result")
-                        trajectories_for_check_need_update, diff_len_trajectories = [], []
-                        rl_ran = False
-                    elif (
+                    if (
                         card_plus_cfg.use_tpe_v2
                         and tpe_v2_result is not None
                         and should_skip_rl_for_tpe_v2(card_plus_cfg, tpe_v2_result)
@@ -457,11 +458,8 @@ if __name__ == "__main__":
                             "CARD+ TPE v2 gate: dense-shaping check failed (hacked); "
                             "skipping RL training for this version."
                         )
-                        learning_result, trajectories_for_check_need_update, diff_len_trajectories = None, [], []
-                        rl_ran = False
-                    else:
-                        learning_result, trajectories_for_check_need_update, diff_len_trajectories = None, [], []
-                        rl_ran = False
+                    learning_result, trajectories_for_check_need_update, diff_len_trajectories = None, [], []
+                    rl_ran = False
                 else:
                     learning_result, trajectories_for_check_need_update, diff_len_trajectories = train_and_eval(
                         args=args,
@@ -508,6 +506,8 @@ if __name__ == "__main__":
             effective_pass = pass_flag
             if (not rl_ran) and card_plus_cfg.use_tpe_v2 and card_plus_cfg.tpe_v2_mode == "gate":
                 effective_pass = False
+            if should_skip_rl_for_dataset_gate(dataset_gate_result):
+                effective_pass = False
 
             # Feedback must never discard a finished train/checkpoint; always emit rl_query pkl.
             learning_result_feedback = ""
@@ -546,13 +546,21 @@ if __name__ == "__main__":
                     with open(os.path.join(os.path.dirname(specific_code_path), "check pass.txt"), "w") as file:
                         file.write("check pass")
                 elif not effective_pass:
+                    fail_msg = "check fail"
+                    if should_skip_rl_for_dataset_gate(dataset_gate_result):
+                        fail_msg = "dataset gate fail"
+                    elif not (pass_flag or rl_ran):
+                        fail_msg = "tpe_v2 gate fail"
                     with open(os.path.join(os.path.dirname(specific_code_path), "check fail.txt"), "w") as file:
-                        file.write("check fail" if pass_flag or rl_ran else "tpe_v2 gate fail")
+                        file.write(fail_msg)
                 if extend_pool and rl_ran:
                     trajectories_for_check_list.extend(trajectories_for_check_need_update)
             except Exception as exc:
                 feedback_str += learning_result_feedback + "\n" + eval_feedback
                 print_with_color(f"feedback assembly fallback used: {exc}", "YELLOW")
+
+            if dataset_gate_result is not None:
+                feedback_str = feedback_str + "\n" + dataset_gate_result.feedback_text()
 
             if card_plus_cfg.any_enabled:
                 stats_trajs = (
@@ -602,32 +610,6 @@ if __name__ == "__main__":
                     train_final_fn=_train_final,
                 )
 
-            triage_stop = False
-            if triage_flags.any_enabled:
-                success_score = score_from_learning_result(learning_result)
-                post = triage_after_iteration(
-                    triage_flags,
-                    reward_code=specific_code,
-                    args=args,
-                    run_dir=args.log_path,
-                    iteration=args.step,
-                    rl_ran=rl_ran,
-                    learning_result=learning_result,
-                    success_score=success_score,
-                    n_eval_episodes=args.n_eval_episodes,
-                    rolled_back=last_card_plus_rolled_back(args.log_path),
-                    archive_rollback_enabled=bool(card_plus_cfg.use_archive_rollback),
-                    train_max_steps=args.train_max_steps,
-                    cache_key=triage_pre.cache_key if triage_pre is not None else None,
-                    env_metrics={"success": success_score},
-                )
-                triage_stop = bool(post.should_stop)
-                if triage_stop:
-                    print(
-                        "reward_triage: plateau stop requested "
-                        f"(iteration={args.step}; reasons={post.reasons})"
-                    )
-
             query_file_path = os.path.join(args.log_path, f"{RL_QUERY}_{args.step}.pkl")
             with open(query_file_path, "wb") as file:
                 pickle.dump(
@@ -637,7 +619,6 @@ if __name__ == "__main__":
                         "message_history": message_history,
                         "trajectories_for_check_list": trajectories_for_check_list,
                         "feedback_str": feedback_str,
-                        "triage_stop": triage_stop if triage_flags.any_enabled else False,
                     },
                     file,
                 )

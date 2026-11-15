@@ -353,8 +353,37 @@ def convert_function_external(reward_function_code: str, benchmark_name="metawor
         reward_function_code = re.sub(r"action\s*:\s*np\.ndarray\s*,\s*obs\s*:\s*np\.ndarray\s*\)\s*->\s*Tuple\s*\[\s*float\s*,\s*Dict\s*\[\s*str\s*,\s*float\s*\]\s*\]\s*:", 'action: np.ndarray, obs: np.ndarray, goal_position) -> Tuple[float, Dict[str, float]]:', reward_function_code)
         reward_function_code = re.sub(r'self.env._get_pos_goal\(\)', 'goal_position', reward_function_code)
         return reward_function_code
-    elif benchmark_name in ("maniskill", "crowdnav"):
+    elif benchmark_name == "maniskill":
         reward_function_code = re.sub(r'def compute_dense_reward\(self, ', 'def compute_dense_reward(', reward_function_code)
+        return reward_function_code
+    elif benchmark_name == "crowdnav":
+        # Drop bound-method ``self``; expose previous obs as ``pre_obs`` for delta progress.
+        reward_function_code = re.sub(
+            r'def compute_dense_reward\(self,\s*',
+            'def compute_dense_reward(',
+            reward_function_code,
+        )
+        if re.search(r'def compute_dense_reward\([^)]*\bpre_obs\b', reward_function_code) is None:
+            reward_function_code = re.sub(
+                r'(def compute_dense_reward\([^)]*?)(\)\s*(?:->[^:]+)?:)',
+                r'\1, pre_obs=None\2',
+                reward_function_code,
+                count=1,
+            )
+        reward_function_code = re.sub(
+            r'getattr\(\s*self\s*,\s*[\'"]pre_obs[\'"]\s*(?:,\s*None)?\s*\)',
+            'pre_obs',
+            reward_function_code,
+        )
+        reward_function_code = reward_function_code.replace('self.pre_obs', 'pre_obs')
+        # First-step / missing pre_obs must not crash offline TPE / return-check.
+        if "if pre_obs is None:" not in reward_function_code:
+            reward_function_code = re.sub(
+                r'(def compute_dense_reward\([^)]*\)\s*(?:->[^:]+)?:\s*\n)',
+                r'\1    if pre_obs is None:\n        pre_obs = obs\n',
+                reward_function_code,
+                count=1,
+            )
         return reward_function_code
     else:
         raise RuntimeError("benchmark name error!")
@@ -379,7 +408,19 @@ def trajectories_return_check(reward_function, trajectories, mapping_dicts, thre
             if benchmark_name == "metaworld":
                 result = reward_function(action=traj['actions'][step], obs=traj['obs'][step], goal_position=traj['self.goal_position'][step])
             elif benchmark_name == "crowdnav":
-                result = reward_function(action=traj['actions'][step], obs=traj['obs'][step])
+                pre_obs = traj['obs'][step - 1] if step > 0 else traj['obs'][step]
+                try:
+                    result = reward_function(
+                        action=traj['actions'][step],
+                        obs=traj['obs'][step],
+                        pre_obs=pre_obs,
+                    )
+                except TypeError:
+                    holder = type("PreObsHolder", (), {})()
+                    holder.pre_obs = pre_obs
+                    result = reward_function(
+                        holder, traj['actions'][step], traj['obs'][step]
+                    )
             elif benchmark_name == "maniskill":
                 ac = traj['actions'][step]
                 ob, result, done, info = env.step(ac)

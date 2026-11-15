@@ -10,24 +10,37 @@ param(
     [switch]$EvalBest
 )
 $ErrorActionPreference = "Stop"
-$repo = "D:\Thesis\Implementation\card-v1.0"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repo = (Resolve-Path (Join-Path $here "..\..")).Path
 Set-Location $here
 
 $env:PYTHONPATH = $repo
 $env:PYTHONUNBUFFERED = "1"
 $env:PYTHONIOENCODING = "utf-8"
-$env:MUJOCO_PY_MUJOCO_PATH = "C:\Users\AmirHossein\.mujoco\mujoco210"
-$env:MUJOCO_PY_MJKEY_PATH = "C:\Users\AmirHossein\.mujoco\mjkey.txt"
-$env:PATH = "C:\Users\AmirHossein\.mujoco\mujoco210\bin;" + $env:PATH
+# Optional MuJoCo: use env if already set, else try %USERPROFILE%\.mujoco\mujoco210
+$mujocoHome = Join-Path $env:USERPROFILE ".mujoco\mujoco210"
+if (-not $env:MUJOCO_PY_MUJOCO_PATH -and (Test-Path -LiteralPath $mujocoHome)) {
+    $env:MUJOCO_PY_MUJOCO_PATH = $mujocoHome
+    $env:PATH = (Join-Path $mujocoHome "bin") + ";" + $env:PATH
+}
+$mjkey = Join-Path $env:USERPROFILE ".mujoco\mjkey.txt"
+if (-not $env:MUJOCO_PY_MJKEY_PATH -and (Test-Path -LiteralPath $mjkey)) {
+    $env:MUJOCO_PY_MJKEY_PATH = $mjkey
+}
 if (-not $env:XAI_KEYS_PATH) {
     $env:XAI_KEYS_PATH = Join-Path $repo "xai_keys.json"
 }
-if (-not $env:XAI_PROXY) {
-    $env:XAI_PROXY = "http://127.0.0.1:10809"
-}
+# Do not force a local proxy; set XAI_PROXY yourself if you need one.
 
-$py = "C:\Users\AmirHossein\miniconda3\envs\card\python.exe"
+if ($env:CARD_PYTHON -and (Test-Path -LiteralPath $env:CARD_PYTHON)) {
+    $py = $env:CARD_PYTHON
+} else {
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $cmd) { throw "python not found. Set CARD_PYTHON to your card env interpreter." }
+    $py = $cmd.Source
+}
+Write-Host "REPO=$repo"
+Write-Host "PYTHON=$py"
 $common = @(
     "--exp_name", "card",
     "--task_name", "drawer-open-v2",

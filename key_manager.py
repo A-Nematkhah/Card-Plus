@@ -1,8 +1,11 @@
 """xAI (Grok) API keys for CARD.
 
-Loads keys from ``xai_keys.json`` (or ``XAI_KEYS_PATH``), formatted as
-``{"keys": ["xai-...", ...]}``. Falls back to ``XAI_API_KEY``.
-Never commit ``xai_keys.json``.
+Load order:
+1. ``XAI_KEYS_PATH`` / ``xai_keys.json`` as ``{"keys": ["xai-...", ...]}``
+2. plain-text ``xai_key`` in the repo root (one key per line; see ``xai_key.example``)
+3. ``XAI_API_KEY`` environment variable
+
+Never commit ``xai_key`` or ``xai_keys.json``.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ DEFAULT_XAI_TRANSIENT_BACKOFF = float(os.environ.get("XAI_TRANSIENT_BACKOFF", "2
 _PLACEHOLDER_PREFIXES = ("xai_REPLACE", "xai-REPLACE", "xai_your_", "YOUR_KEY")
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_XAI_KEYS_PATH = os.path.join(_REPO_ROOT, "xai_keys.json")
+DEFAULT_XAI_PLAIN_KEY_PATH = os.path.join(_REPO_ROOT, "xai_key")
 
 
 def is_xai_model(model_name: str) -> bool:
@@ -185,6 +189,22 @@ def load_xai_keys(keys_path: Optional[str] = None) -> List[str]:
     return [str(k).strip() for k in raw if k and not _is_placeholder_key(str(k))]
 
 
+def load_plain_xai_key(path: Optional[str] = None) -> List[str]:
+    """Load keys from the gitignored plain-text ``xai_key`` file."""
+    path = path or DEFAULT_XAI_PLAIN_KEY_PATH
+    if not os.path.isfile(path):
+        return []
+    keys: List[str] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if not _is_placeholder_key(line):
+                keys.append(line)
+    return keys
+
+
 def resolve_single_xai_api_key() -> Optional[str]:
     key = (os.environ.get("XAI_API_KEY") or "").strip()
     return key or None
@@ -198,12 +218,15 @@ class XAIKeyManager:
         else:
             self.keys = load_xai_keys(self.keys_path)
         if not self.keys:
+            self.keys = load_plain_xai_key()
+        if not self.keys:
             single_key = resolve_single_xai_api_key()
             self.keys = [single_key] if single_key else []
         if not self.keys:
             raise RuntimeError(
-                f"No xAI API keys available. Set XAI_API_KEY or create "
-                f'{self.keys_path} as {{"keys": ["xai-...", ...]}}'
+                "No xAI API keys available. Put a key in repo-root ``xai_key``, "
+                f'or set XAI_API_KEY, or create {self.keys_path} as '
+                '{"keys": ["xai-...", ...]}'
             )
         self.index = 0
         self.cooldown_until = {key: 0.0 for key in self.keys}

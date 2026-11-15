@@ -25,8 +25,9 @@ def test_scripts_call_shared_6e1df1c_helpers():
         assert "apply_card_plus_after_baseline" in text, path.name
         assert "args.step >= args.reflection_num" not in text, path.name
         assert "card_plus_cfg.any_enabled" in text, path.name
-        assert "triage_flags.any_enabled" in text, path.name
-        assert "add_triage_arguments" in text, path.name
+        assert "triage_flags" not in text, path.name
+        assert "add_triage_arguments" not in text, path.name
+        assert "card_triage_adapter" not in text, path.name
 
 
 def test_6e1df1c_feedback_pass_and_fail():

@@ -1,9 +1,15 @@
 import json5
-import re
-import time
 from typing import Dict
-from langchain.chains import LLMChain
-from langchain.base_language import BaseLanguageModel
+
+# Optional legacy LangChain imports (unused by RewardFunctionConverter).
+try:
+    from langchain.chains import LLMChain  # noqa: F401
+except ImportError:
+    LLMChain = None  # type: ignore
+try:
+    from langchain.base_language import BaseLanguageModel  # noqa: F401
+except ImportError:
+    BaseLanguageModel = None  # type: ignore
 
 
 class RewardFunctionConverter:

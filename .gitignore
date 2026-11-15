@@ -140,6 +140,7 @@ dmypy.json
 # tmp files
 **/tmp/**/*
 api_key.py
+xai_key
 xai_keys.json
 groq_keys.json
 tmp.*

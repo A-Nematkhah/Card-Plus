@@ -72,6 +72,20 @@ def recompute_reward_on_traj(
                 obs=obs[i],
                 goal_position=goal,
             )
+        elif benchmark_name == "crowdnav":
+            pre_obs = obs[i - 1] if i > 0 else obs[i]
+            try:
+                result = reward_fn(
+                    action=traj["actions"][i],
+                    obs=obs[i],
+                    pre_obs=pre_obs,
+                )
+            except TypeError:
+                # Method-style ``compute_dense_reward(self, action, obs)``:
+                # attach pre_obs on a tiny holder when reward_fn is unbound.
+                holder = type("PreObsHolder", (), {})()
+                holder.pre_obs = pre_obs
+                result = reward_fn(holder, traj["actions"][i], obs[i])
         else:
             result = reward_fn(action=traj["actions"][i], obs=obs[i])
 
