@@ -68,6 +68,7 @@ def enrich_feedback(
     reward_fn: Optional[Callable[..., Any]] = None,
     benchmark_name: str = "metaworld",
     version_index: Optional[int] = None,
+    version_score: Optional[float] = None,
 ) -> str:
     """Append dense-shaping then sub-reward stats after process/traj/preference text.
 
@@ -76,11 +77,15 @@ def enrich_feedback(
     caller *after* this function.
     """
     out = feedback_str
+    suppress_hacked = (
+        version_score is not None
+        and float(version_score) >= float(cfg.suppress_hacked_feedback_score)
+    )
     if cfg.use_tpe_v2 and tpe_v2 is not None and tpe_v2.feedback_text:
-        if tpe_v2.hacked:
+        if tpe_v2.hacked and not suppress_hacked:
             out = (out.rstrip() + "\n\n" + tpe_v2.feedback_text) if out else tpe_v2.feedback_text
 
-    if cfg.use_subreward_stats and trajs:
+    if cfg.use_subreward_stats and trajs and len(trajs) >= max(1, int(cfg.tpe_v2_min_trajs)):
         comps = None
         if reward_fn is not None and rl_skipped:
             comps_list = []
@@ -99,7 +104,67 @@ def enrich_feedback(
             rl_skipped=rl_skipped,
             version_index=version_index,
         )
+    elif cfg.use_subreward_stats and (not trajs or len(trajs) < max(1, int(cfg.tpe_v2_min_trajs))):
+        version_bit = (
+            f" for reward version {version_index}" if version_index is not None else ""
+        )
+        note = (
+            f"# Sub-reward Statistics{version_bit}\n"
+            "(deferred: trajectory pool smaller than "
+            f"{cfg.tpe_v2_min_trajs}; no offline stats this step.)"
+        )
+        out = (out.rstrip() + "\n\n" + note) if out else note
     return out
+
+
+def restore_reward_file_to_best(
+    *,
+    specific_code_path: Optional[str],
+    best_code: str,
+    failed_code: str,
+) -> bool:
+    """Backup failed reward and overwrite on-disk specific file with best code."""
+    if not specific_code_path:
+        return False
+    path = Path(specific_code_path)
+    if not path.parent.exists():
+        return False
+    # specific_1.py -> specific_1.failed.py
+    failed_path = path.with_name(path.stem + ".failed.py")
+    try:
+        failed_path.write_text(failed_code, encoding="utf-8")
+        path.write_text(best_code, encoding="utf-8")
+        return True
+    except OSError as exc:
+        logger.warning("CARD+ rollback file restore failed: %s", exc)
+        return False
+
+
+def on_policy_tpe_v2(
+    cfg: CardPlusConfig,
+    trajs: Sequence[Dict[str, Any]],
+    *,
+    pass_v1: Optional[bool],
+    acc_v1: Optional[float],
+    task_name: str,
+    benchmark_name: str,
+    gate_tpe: Optional[TPEv2Result],
+) -> Optional[TPEv2Result]:
+    """Recompute TPE v2 on the same traj pool used for sub-reward stats (after RL)."""
+    if not cfg.use_tpe_v2:
+        return gate_tpe
+    if not trajs or len(trajs) < max(1, int(cfg.tpe_v2_min_trajs)):
+        return gate_tpe
+    return run_tpe_v2(
+        trajs,
+        pass_v1=bool(pass_v1) if pass_v1 is not None else True,
+        acc_v1=float(acc_v1) if acc_v1 is not None else 0.0,
+        cfg=cfg,
+        task_name=task_name,
+        reward_fn=None,
+        use_stored_components=True,
+        benchmark_name=benchmark_name,
+    )
 
 
 def update_archive_after_version(
@@ -115,19 +180,22 @@ def update_archive_after_version(
     pass_v1: Optional[bool],
     acc_v1: Optional[float],
     another_iteration_remains: bool,
-) -> Tuple[VersionRecord, bool, str]:
+) -> Tuple[VersionRecord, bool, str, Optional[str]]:
     """Register a version; optionally build a rollback notice.
 
-    Returns (record, rolled_back, rollback_notice_or_empty).
+    Returns (record, rolled_back, rollback_notice_or_empty, restored_best_code_or_none).
     """
     curve = extract_success_curve(learning_result) if rl_ran else []
     score = score_from_curve(curve, cfg.score_last_k_evals) if rl_ran else None
     auc = success_curve_auc(curve) if rl_ran and curve else None
-    mean_ret = extract_mean_return(learning_result) if rl_ran else None
+    mean_ret = (
+        extract_mean_return(learning_result, last_k=cfg.score_last_k_evals) if rl_ran else None
+    )
 
     # Decide rollback against previous best BEFORE adding current (if current is bad)
     rolled_back = False
     notice = ""
+    restored_best_code: Optional[str] = None
     if (
         cfg.use_archive_rollback
         and rl_ran
@@ -135,9 +203,11 @@ def update_archive_after_version(
         and another_iteration_remains
         and archive.should_rollback_against(score, exclude_iteration=iteration)
     ):
-        best = archive.best_record()
+        # Same peer set as the rollback decision (never restore the current iteration).
+        best = archive.best_record_excluding(exclude_iteration=iteration)
         if best is not None:
             rolled_back = True
+            restored_best_code = best.reward_code
             failed_preview = VersionRecord(
                 iteration=iteration,
                 reward_code=reward_code,
@@ -170,7 +240,7 @@ def update_archive_after_version(
         archive.add(record)
         _persist_best_code(archive)
 
-    return record, rolled_back, notice
+    return record, rolled_back, notice, restored_best_code
 
 
 def _persist_best_code(archive: RewardArchive) -> None:
@@ -269,7 +339,7 @@ def maybe_score_final_version(
     last.success_curve = curve
     last.version_score = score_from_curve(curve, cfg.score_last_k_evals)
     last.curve_auc = success_curve_auc(curve) if curve else None
-    last.mean_return = extract_mean_return(learning_result)
+    last.mean_return = extract_mean_return(learning_result, last_k=cfg.score_last_k_evals)
     archive.add(last)
     _persist_best_code(archive)
     return last
@@ -285,14 +355,7 @@ def _diff_sizes(
     scored = [v for v in others if v.rl_ran and v.version_score is not None]
     best = None
     if scored:
-        best = max(
-            scored,
-            key=lambda v: (
-                float(v.version_score or 0.0),
-                float(v.curve_auc or 0.0),
-                float(v.rho_full or 0.0),
-            ),
-        )
+        best = max(scored, key=archive._score_key)
     vs_best = unified_diff_line_count(best.reward_code, reward_code) if best else None
     vs_prev = unified_diff_line_count(prev.reward_code, reward_code) if prev else None
     return vs_best, vs_prev
@@ -317,11 +380,20 @@ def apply_card_plus_after_baseline(
     reward_fn: Optional[Callable[..., Any]] = None,
     train_final_fn: Optional[Callable[[str], Any]] = None,
     token_counts: Optional[Dict[str, Any]] = None,
+    specific_code_path: Optional[str] = None,
+    mutate_archive: bool = True,
 ) -> str:
     """Apply CARD+ after baseline process/trajectory/preference text.
 
     Order: process/trajectory → (dense-shaping) → stats → rollback notice.
     Stats header is labeled with this version index when a rollback notice is added.
+
+    After RL, TPE v2 diagnostics are recomputed on the same on-policy traj pool
+    used for sub-reward stats so feedback stays consistent. Pre-train ``tpe_v2``
+    remains the gate decision in the caller.
+
+    ``mutate_archive=False`` (checkpoint resume): enrich feedback only; do not
+    re-register the version, re-rollback, or rewrite ``card_plus_best/``.
     """
     if not cfg.any_enabled:
         return feedback_str
@@ -332,19 +404,74 @@ def apply_card_plus_after_baseline(
     another_left = another_coder_query_follows(iteration, cfg.card_plus_max_step)
     diff_best, diff_prev = _diff_sizes(archive, reward_code, exclude_iteration=iteration)
 
-    record, rolled_back, rollback_notice = update_archive_after_version(
-        archive,
-        cfg,
-        iteration=iteration,
-        reward_code=reward_code,
-        sub_reward_names=sub_reward_names_from_trajs(trajs),
-        rl_ran=rl_ran,
-        learning_result=learning_result,
-        tpe_v2=tpe_v2,
-        pass_v1=pass_v1,
-        acc_v1=acc_v1,
-        another_iteration_remains=another_left,
-    )
+    # Align dense-shaping diagnostics with the trajs used for stats.
+    feedback_tpe = tpe_v2
+    if rl_ran:
+        feedback_tpe = on_policy_tpe_v2(
+            cfg,
+            trajs,
+            pass_v1=pass_v1,
+            acc_v1=acc_v1,
+            task_name=task_name,
+            benchmark_name=benchmark_name,
+            gate_tpe=tpe_v2,
+        )
+
+    rolled_back = False
+    rollback_notice = ""
+    restored_best = None
+    record = None
+    if mutate_archive:
+        record, rolled_back, rollback_notice, restored_best = update_archive_after_version(
+            archive,
+            cfg,
+            iteration=iteration,
+            reward_code=reward_code,
+            sub_reward_names=sub_reward_names_from_trajs(trajs),
+            rl_ran=rl_ran,
+            learning_result=learning_result,
+            tpe_v2=feedback_tpe,
+            pass_v1=pass_v1,
+            acc_v1=acc_v1,
+            another_iteration_remains=another_left,
+        )
+
+        if rolled_back and restored_best:
+            restored = restore_reward_file_to_best(
+                specific_code_path=specific_code_path,
+                best_code=restored_best,
+                failed_code=reward_code,
+            )
+            if restored:
+                peer = archive.best_record_excluding(exclude_iteration=iteration)
+                peer_idx = peer.iteration if peer is not None else archive.best_index()
+                print(
+                    f"CARD+ rollback: restored on-disk reward to best version "
+                    f"{peer_idx} (failed saved alongside)."
+                )
+    else:
+        # Read-only resume: synthesize a lightweight record for logging/enrichment.
+        curve = extract_success_curve(learning_result) if rl_ran else []
+        record = VersionRecord(
+            iteration=iteration,
+            reward_code=reward_code,
+            sub_reward_names=sub_reward_names_from_trajs(trajs),
+            rl_ran=rl_ran,
+            success_curve=curve,
+            version_score=score_from_curve(curve, cfg.score_last_k_evals) if rl_ran else None,
+            curve_auc=success_curve_auc(curve) if rl_ran and curve else None,
+            mean_return=(
+                extract_mean_return(learning_result, last_k=cfg.score_last_k_evals)
+                if rl_ran
+                else None
+            ),
+            tpe_acc_v1=acc_v1,
+            tpe_pass_v1=pass_v1,
+            rho_full=feedback_tpe.rho_full if feedback_tpe else None,
+            rho_dense=feedback_tpe.rho_dense if feedback_tpe else None,
+            hacked=feedback_tpe.hacked if feedback_tpe else None,
+            verdict=feedback_tpe.verdict if feedback_tpe else None,
+        )
 
     version_for_stats = iteration if rolled_back else None
     feedback_str = enrich_feedback(
@@ -352,18 +479,19 @@ def apply_card_plus_after_baseline(
         cfg,
         trajs=trajs,
         task_name=task_name,
-        tpe_v2=tpe_v2,
+        tpe_v2=feedback_tpe,
         rl_skipped=not rl_ran,
         reward_fn=reward_fn if not rl_ran else None,
         benchmark_name=benchmark_name,
         version_index=version_for_stats,
+        version_score=record.version_score,
     )
     if rolled_back and rollback_notice:
         feedback_str = feedback_str.rstrip() + "\n\n" + rollback_notice
 
     extra_scored = None
     extra_cost = None
-    if is_final and train_final_fn is not None:
+    if mutate_archive and is_final and train_final_fn is not None:
         extra_scored = maybe_score_final_version(
             cfg,
             archive,
@@ -382,24 +510,25 @@ def apply_card_plus_after_baseline(
                 f"(see {os.path.join(run_dir, 'card_plus_best')})."
             )
 
-    write_iteration_log(
-        run_dir,
-        cfg,
-        iteration=iteration,
-        tpe_v2=tpe_v2,
-        pass_v1=pass_v1,
-        acc_v1=acc_v1,
-        rl_ran=rl_ran if extra_scored is None else True,
-        version_score=record.version_score if extra_scored is None else extra_scored.version_score,
-        best_idx=archive.best_index(),
-        rolled_back=rolled_back,
-        token_counts=token_counts,
-        extra_score_final_version=extra_scored is not None,
-        extra_train_cost=extra_cost,
-        diff_lines_vs_best=diff_best,
-        diff_lines_vs_prev=diff_prev,
-        is_final_step=is_final,
-    )
+    if mutate_archive:
+        write_iteration_log(
+            run_dir,
+            cfg,
+            iteration=iteration,
+            tpe_v2=feedback_tpe,
+            pass_v1=pass_v1,
+            acc_v1=acc_v1,
+            rl_ran=rl_ran if extra_scored is None else True,
+            version_score=record.version_score if extra_scored is None else extra_scored.version_score,
+            best_idx=archive.best_index(),
+            rolled_back=rolled_back,
+            token_counts=token_counts,
+            extra_score_final_version=extra_scored is not None,
+            extra_train_cost=extra_cost,
+            diff_lines_vs_best=diff_best,
+            diff_lines_vs_prev=diff_prev,
+            is_final_step=is_final,
+        )
     return feedback_str
 
 

@@ -87,3 +87,64 @@ def test_tie_break_auc_then_rho(tmp_path):
         )
     )
     assert arch.best_index() == 2
+
+
+def test_tie_break_prefers_higher_mean_return(tmp_path):
+    cfg = CardPlusConfig(use_archive_rollback=True)
+    arch = RewardArchive(run_dir=str(tmp_path), cfg=cfg)
+    arch.add(
+        VersionRecord(
+            iteration=1,
+            reward_code="fast",
+            rl_ran=True,
+            version_score=1.0,
+            curve_auc=0.6,
+            mean_return=22.0,
+            success_curve=[1.0],
+        )
+    )
+    arch.add(
+        VersionRecord(
+            iteration=2,
+            reward_code="slow",
+            rl_ran=True,
+            version_score=1.0,
+            curve_auc=0.6,
+            mean_return=11.0,
+            success_curve=[1.0],
+        )
+    )
+    assert arch.best_index() == 1
+
+
+def test_should_rollback_excludes_latest_by_default(tmp_path):
+    cfg = CardPlusConfig(use_archive_rollback=True, rollback_margin=0.05)
+    arch = RewardArchive(run_dir=str(tmp_path), cfg=cfg)
+    arch.add(
+        VersionRecord(iteration=1, reward_code="best", rl_ran=True, version_score=0.9, success_curve=[0.9])
+    )
+    arch.add(
+        VersionRecord(iteration=2, reward_code="worse", rl_ran=True, version_score=0.2, success_curve=[0.2])
+    )
+    # Even after adding the bad version, comparing its score must not use itself as best.
+    assert arch.should_rollback(0.2) is True
+
+
+def test_best_record_excluding_matches_rollback_peer(tmp_path):
+    cfg = CardPlusConfig(use_archive_rollback=True, rollback_margin=0.05)
+    arch = RewardArchive(run_dir=str(tmp_path), cfg=cfg)
+    arch.add(
+        VersionRecord(iteration=1, reward_code="best", rl_ran=True, version_score=0.9, success_curve=[0.9])
+    )
+    arch.add(
+        VersionRecord(iteration=2, reward_code="mid", rl_ran=True, version_score=0.5, success_curve=[0.5])
+    )
+    # Current iteration already present (checkpoint re-run): exclude it.
+    arch.add(
+        VersionRecord(iteration=3, reward_code="current", rl_ran=True, version_score=0.1, success_curve=[0.1])
+    )
+    peer = arch.best_record_excluding(exclude_iteration=3)
+    assert peer is not None
+    assert peer.iteration == 1
+    assert peer.reward_code == "best"
+    assert arch.should_rollback_against(0.1, exclude_iteration=3) is True

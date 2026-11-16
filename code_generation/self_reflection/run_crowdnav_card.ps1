@@ -1,41 +1,50 @@
-﻿# CARD loop for CrowdNav++ circle-crossing-v0 (compute-lean defaults):
-# - Short screen ~100k x TrainRounds (rank by peak when scores are flat)
-# - Top-K finalists CONTINUE from short checkpoint up to FinalistSteps
-# - Cheap train eval (10 eps / 10k freq); held-out 50-eps eval only at the end
-# - Each query: LLM candidates -> gate -> ONLY best composite is trained
+﻿# CARD loop for CrowdNav++ / EvoNav (GST + PPO/SRNN), defaults ON:
+# - Dataset gate (logs/crowdnav_ds_v1) + LLM multi-candidate selection
+# - CARD+ archive / TPE / SH finalists
+# - Short screen then top-K finalist continue
+# - Single-process DummyVecEnv (PPO+GST stack; TrainNum>1 does not parallelize yet)
+#
+# ~18h lean budget defaults below. Override with -TrainMaxSteps / -FinalistSteps etc.
 param(
     [string]$ResumeLogPath = "",
     [int]$StartStep = 0,
-    [int]$TrainRounds = 5,
+    [int]$TrainRounds = 3,
     [int]$TrainMaxSteps = 150000,
-    [int]$FinalistSteps = 550000,
+    [int]$FinalistSteps = 1000000,
     [int]$FinalistTopK = 2,
     [switch]$NoFinalists,
-    [int]$EvalFreq = 10000,
-    [int]$TrainNum = 4,
-    [int]$EvalNum = 4,
-    [int]$NEvalEpisodes = 10,
+    # Mid-train eval ON (needed for SH / success curves). End-of-short also runs FinalEvalEpisodes.
+    [int]$EvalFreq = 20000,
+    [int]$TrainNum = 1,
+    [int]$EvalNum = 1,
+    [int]$NEvalEpisodes = 5,
+    [int]$FinalEvalEpisodes = 100,
     [int]$LlmCandidates = 5,
     [ValidateSet("auto","dummy","subproc")]
-    [string]$VecEnv = "auto",
+    [string]$VecEnv = "dummy",
     [switch]$Smoke,
-    [switch]$CardPlus,
+    # CARD+ / SH finalists ON by default; pass -NoCardPlus to disable.
+    [switch]$NoCardPlus,
     [ValidateSet("warn","gate")]
     [string]$TpeV2Mode = "warn",
-    # Offline dataset gate (optimal defaults). On unless -NoDatasetRescore.
+    # Offline dataset gate ON by default; pass -NoDatasetRescore to disable.
     [switch]$NoDatasetRescore,
     [ValidateSet("warn","gate")]
     [string]$DatasetMode = "gate",
     [string]$DatasetPath = "",
-    [switch]$EvalBest
+    [switch]$EvalBest,
+    # If dataset missing: fail (default) instead of silently disabling the gate.
+    [switch]$AllowMissingDataset
 )
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-# repo root = .../Card-plus (two levels above self_reflection/)
+# repo root = card-v1.0 (two levels above self_reflection/)
 $repo = (Resolve-Path (Join-Path $here "..\..")).Path
 Set-Location $here
 
 if ($TrainRounds -lt 1) { throw "TrainRounds must be >= 1" }
+
+$CardPlus = -not $NoCardPlus
 
 $env:PYTHONPATH = $repo
 $env:PYTHONUNBUFFERED = "1"
@@ -49,6 +58,8 @@ if ($Smoke) {
     $TrainMaxSteps = 2000
     $FinalistSteps = 4000
     $EvalFreq = 1000
+    $NEvalEpisodes = 2
+    $FinalEvalEpisodes = 4
 }
 
 if ($env:CARD_PYTHON -and (Test-Path -LiteralPath $env:CARD_PYTHON)) {
@@ -58,8 +69,16 @@ if ($env:CARD_PYTHON -and (Test-Path -LiteralPath $env:CARD_PYTHON)) {
     if (-not $cmd) { throw "python not found. Set CARD_PYTHON to your card env interpreter." }
     $py = $cmd.Source
 }
+
+# Fastest measured on this machine: CPU + 4 torch threads (ORCA-bound; GPU optional via CARD_DEVICE=cuda)
+if (-not $env:CARD_DEVICE) { $env:CARD_DEVICE = "cpu" }
+
 Write-Host "REPO=$repo"
 Write-Host "PYTHON=$py"
+Write-Host "Stack: CrowdNav++ GST + PPO/selfAttn SRNN | env H=20 robot_visible=False"
+Write-Host "Device: CARD_DEVICE=$($env:CARD_DEVICE) torch_threads=4"
+Write-Host "Features: CardPlus/SH=$CardPlus DatasetGate=$(-not $NoDatasetRescore) Finalists=$(-not $NoFinalists)"
+
 $common = @(
     "--exp_name", "card",
     "--task_name", "circle-crossing-v0",
@@ -71,10 +90,11 @@ $common = @(
     "--train_num", "$TrainNum",
     "--eval_num", "$EvalNum",
     "--vec_env", "$VecEnv",
-    "--torch_threads", "1",
+    "--torch_threads", "4",
     "--sub_reward_eval_mult", "4",
     "--train_seed_num", "1",
     "--n_eval_episodes", "$NEvalEpisodes",
+    "--final_eval_episodes", "$FinalEvalEpisodes",
     "--trajectory_num", "20",
     "--log_interval", "10",
     "--use_return_check",
@@ -88,8 +108,9 @@ if ($CardPlus) {
         "--use_subreward_stats",
         "--use_archive_rollback"
     )
-    Write-Host "CARD+ enabled: TPE v2 ($TpeV2Mode) + sub-reward stats + archive/rollback"
+    Write-Host "CARD+ enabled: TPE v2 ($TpeV2Mode) + sub-reward stats + archive/rollback + SH finalists"
 }
+
 # Optimal dataset gate: keep only rewards that separate success/collision/timeout.
 if (-not $NoDatasetRescore) {
     if ($DatasetPath -eq "") {
@@ -112,7 +133,12 @@ if (-not $NoDatasetRescore) {
         )
         Write-Host "Dataset gate ON ($DatasetMode): $DatasetPath (LLM $LlmCandidates candidates -> best composite out)"
     } else {
-        Write-Host "WARNING: dataset not found at $DatasetPath — gate disabled"
+        $msg = "Dataset not found at $DatasetPath. Collect first: python -m card_plus.dataset.collect --out logs/crowdnav_ds_v1 ..."
+        if ($AllowMissingDataset) {
+            Write-Host "WARNING: $msg — gate disabled (-AllowMissingDataset)"
+        } else {
+            throw $msg
+        }
     }
 }
 Write-Host "TrainNum=$TrainNum EvalNum=$EvalNum VecEnv=$VecEnv CardPlus=$CardPlus"
@@ -120,7 +146,7 @@ $continueSteps = [Math]::Max(0, $FinalistSteps - $TrainMaxSteps)
 $approxShort = $TrainRounds * $TrainMaxSteps
 $approxFinal = $FinalistTopK * $continueSteps
 Write-Host "LEAN budget: short=${TrainRounds}x${TrainMaxSteps}=$approxShort; finalists=${FinalistTopK}x+${continueSteps}=$approxFinal; total_RL≈$($approxShort+$approxFinal)"
-Write-Host "eval_freq=$EvalFreq n_eval=$NEvalEpisodes llm_cand=$LlmCandidates (held-out 50eps at end; NoFinalists=$NoFinalists)"
+Write-Host "eval: mid_train every ${EvalFreq} steps x ${NEvalEpisodes}eps (SH); end_of_short=${FinalEvalEpisodes}eps; llm_cand=$LlmCandidates; NoFinalists=$NoFinalists"
 
 function Invoke-Card([string[]]$arguments, [string]$name) {
     Write-Host ""
@@ -141,7 +167,7 @@ if ($ResumeLogPath -ne "") {
     Write-Host "Resuming LOG_PATH=$runLogPath from step $StartStep"
 } else {
     $stamp = Get-Date -Format "yyyy-MM-dd-HH-mm-ss"
-    $runLogPath = Join-Path $here "logs\crowdnav\grok-4.3\t=0.7\zero-shot\SAC_1\circle-crossing-v0\card\exclude=None\$stamp"
+    $runLogPath = Join-Path $here "logs\crowdnav\grok-4.3\t=0.7\zero-shot\PPO_GST_1\circle-crossing-v0\card\exclude=None\$stamp"
     New-Item -ItemType Directory -Force -Path $runLogPath | Out-Null
     $StartStep = 0
     Invoke-Card (@("crowdnav_exp_one_step.py") + $common + @("--step", "0", "--log_path", $runLogPath)) "step0"
@@ -183,7 +209,7 @@ for ($k = 1; $k -le $TrainRounds; $k++) {
 # Across-step SH: top-K short-trained versions get a long final train.
 if (-not $NoFinalists) {
     if (-not $CardPlus) {
-        Write-Host "WARNING: finalists need -CardPlus archive; skipping finalist phase"
+        Write-Host "WARNING: finalists need CARD+ archive; skipping finalist phase (remove -NoCardPlus)"
     } else {
         $finReport = Join-Path $runLogPath "finalists\report.json"
         if (Test-Path -LiteralPath $finReport) {
@@ -201,7 +227,7 @@ if (-not $NoFinalists) {
                 "--train_num", "$TrainNum",
                 "--eval_num", "$EvalNum",
                 "--vec_env", "$VecEnv",
-                "--torch_threads", "1",
+                "--torch_threads", "4",
                 "--sub_reward_eval_mult", "2",
                 "--max_episode_steps", "200",
                 "--n_eval_episodes", "$NEvalEpisodes",
@@ -218,7 +244,7 @@ if (-not $NoFinalists) {
 }
 
 if ($EvalBest) {
-    if (-not $CardPlus) { Write-Host "WARNING: -EvalBest without -CardPlus (need card_plus_best/specific.py)" }
+    if (-not $CardPlus) { Write-Host "WARNING: -EvalBest without CARD+ (need card_plus_best/specific.py)" }
     Invoke-Card @(
         "-m", "card_plus.eval_best",
         "--log_path", $runLogPath,

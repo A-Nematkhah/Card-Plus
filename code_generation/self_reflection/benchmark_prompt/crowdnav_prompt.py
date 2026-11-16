@@ -2,7 +2,7 @@ from code_generation.self_reflection.crowdnav_env_utils import SENSOR_RANGE, des
 
 intro = f"""
 You are an expert in robotics, reinforcement learning and code generation.
-We are going to use a holonomic mobile robot to complete given navigation tasks in the CrowdNav++ / EvoNav circle-crossing simulator (~12×12 m, 5 ORCA pedestrians that react to the robot; robot is invisible to humans). {describe_action_space()}
+We are going to use a holonomic mobile robot to complete given navigation tasks in the CrowdNav++ / EvoNav circle-crossing simulator (~12×12 m, 20 ORCA pedestrians that react to other humans but not to the robot). The navigation policy is CrowdNav++ (PPO + self-attention SRNN) with GST human-trajectory predictions in the observation; your reward function still reads the engineered flat feature vector described below. {describe_action_space()}
 
 Now I want you to help me write a reward function for reinforcement learning.
 Typically, the reward function of a crowd-navigation task consists of these parts (include a part only if it is necessary):
@@ -38,7 +38,10 @@ self.third_nearest_human.distance : float
 self.detected_human_num : float
 
 # Flat obs layout (use these indices when reading obs / self.pre_obs):
-# obs[0:2] robot pos, obs[2:4] vel, obs[4:6] goal, obs[6] radius, obs[7] min_separation
+# obs[0:2] robot pos, obs[2:4] vel, obs[4:6] goal, obs[6] radius, obs[7] min_separation,
+# obs[8] nearest dist, obs[9:11] nearest rel pos, obs[11:13] nearest rel vel,
+# obs[13] second nearest dist, obs[14] third nearest dist, obs[15] detected_human_num,
+# then per-human [rel_px, rel_py, vx, vy, radius] sorted by distance.
 
 Sensor range is about {SENSOR_RANGE} meters. Prefer distances and relative quantities that are listed above.
 You are allowed to use any existing python package if applicable, but only when necessary.

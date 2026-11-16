@@ -1,8 +1,9 @@
 """CrowdNav++ circle-crossing env for CARD (gym 0.21 + Box obs for SB3).
 
 Aligned with the EvoNav paper simulator (arXiv:2605.11859 §5.1 / CrowdNav++ [27]):
-square workspace ~12×12 m (arena_size=6), 20 ORCA humans that react to the robot,
-sensor range 5 m, vmax=1 m/s, optional human attribute/goal randomization.
+square workspace ~12×12 m (arena_size=6), 20 ORCA humans that react to other humans
+but not to the robot (obs padded to 20), sensor range 5 m, vmax=1 m/s,
+optional human attribute/goal randomization.
 
 Vendors ``CrowdNav_Prediction_AttnGraph/`` (Shuijing725) and uses
 ``CrowdSimVarNum`` with ORCA humans. Does not import the upstream Config
@@ -37,13 +38,13 @@ CROWDNAV_TASKS = {
     "circle-crossing-v0": {
         "instruction": (
             "Navigate a holonomic robot from a random start to a random goal through a circle-crossing crowd "
-            "(CrowdNav++ / EvoNav setting: 10 pedestrians on a ~12×12 m workspace). "
+            "(CrowdNav++ / EvoNav setting: 20 pedestrians on a ~12×12 m workspace). "
             "Reach the goal without colliding with any pedestrian. Keep a comfortable clearance; do not freeze in place "
             "or take a long detour when a shorter safe path exists. "
-            "Humans are ORCA-controlled and react to the robot. "
+            "Humans are ORCA-controlled and react to other humans but not to the robot. "
             "The task is finished successfully when the robot arrives within its own radius of the goal without any collision."
         ),
-        "human_num": 10,
+        "human_num": 20,
         "circle_radius": EVONAV_CIRCLE_RADIUS,
         "arena_size": EVONAV_ARENA_SIZE,
         "time_limit": 50.0,
@@ -52,6 +53,7 @@ CROWDNAV_TASKS = {
         "collision_penalty": -20.0,
         "discomfort_dist": 0.25,
         "discomfort_penalty_factor": 10.0,
+        # False so ORCA humans ignore the robot (EvoNav §5.1 / CrowdNav++ default).
         "robot_visible": False,
         "humans_policy": "orca",
         # with_random | no_random  (EvoNav Table 1 two columns)
@@ -103,6 +105,13 @@ def _ensure_crowdnav_path() -> None:
             f"CrowdNav++ vendor missing at {CROWDNAV_ROOT}. "
             "Clone https://github.com/Shuijing725/CrowdNav_Prediction_AttnGraph into the repo root."
         )
+    # CrowdNav++ still uses removed NumPy aliases on newer NumPy.
+    if not hasattr(np, "bool"):
+        np.bool = np.bool_  # type: ignore[attr-defined]
+    if not hasattr(np, "int"):
+        np.int = int  # type: ignore[attr-defined]
+    if not hasattr(np, "float"):
+        np.float = float  # type: ignore[attr-defined]
     root = os.path.abspath(CROWDNAV_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
@@ -113,7 +122,18 @@ def _ns(**kwargs: Any) -> SimpleNamespace:
     return SimpleNamespace(**kwargs)
 
 
-def build_config(task_name: str, env_config: Optional[Dict[str, Any]] = None) -> SimpleNamespace:
+def build_config(
+    task_name: str,
+    env_config: Optional[Dict[str, Any]] = None,
+    *,
+    stack: str = "flat",
+) -> SimpleNamespace:
+    """Build a CrowdNav-compatible config namespace (never import upstream Config).
+
+    ``stack``:
+      - ``flat``: CARD legacy Box-obs path (no GST wrapper).
+      - ``crowdnav_pp``: CrowdNav++ / EvoNav (GST inferred + selfAttn SRNN).
+    """
     if task_name not in CROWDNAV_TASKS:
         raise KeyError(f"Unknown CrowdNav task: {task_name}")
     task = dict(CROWDNAV_TASKS[task_name])
@@ -128,10 +148,26 @@ def build_config(task_name: str, env_config: Optional[Dict[str, Any]] = None) ->
     # without → fixed traits, no mid-episode goal switches.
     randomization = str(task.get("randomization", "with_random"))
     with_random = randomization != "no_random"
+    use_pp = str(stack).lower() in ("crowdnav_pp", "pp", "gst", "srnn")
+
+    if use_pp:
+        from code_generation.self_reflection.crowdnav_gst import gst_model_dir
+
+        predict_method = "inferred"
+        use_wrapper = True
+        robot_policy = "selfAttn_merge_srnn"
+        pred_model_dir = gst_model_dir(randomized=with_random)
+        device = "cuda"
+    else:
+        predict_method = "none"
+        use_wrapper = False
+        robot_policy = "srnn"
+        pred_model_dir = ""
+        device = "cpu"
 
     return _ns(
-        args=_ns(cuda=False, num_processes=1, sort_humans=True),
-        training=_ns(device="cpu"),
+        args=_ns(cuda=use_pp, num_processes=1, sort_humans=True),
+        training=_ns(device=device if use_pp else "cpu"),
         env=_ns(
             time_limit=float(task["time_limit"]),
             time_step=float(task["time_step"]),
@@ -142,7 +178,7 @@ def build_config(task_name: str, env_config: Optional[Dict[str, Any]] = None) ->
             num_processes=1,
             record=False,
             load_act=False,
-            use_wrapper=False,
+            use_wrapper=use_wrapper,
         ),
         reward=_ns(
             success_reward=float(task["success_reward"]),
@@ -157,8 +193,7 @@ def build_config(task_name: str, env_config: Optional[Dict[str, Any]] = None) ->
             human_num=human_num,
             human_num_range=0,
             predict_steps=5,
-            # CARD flat-obs path; GST prediction left off (policy is SB3 MLP, not CrowdNav SRNN).
-            predict_method="none",
+            predict_method=predict_method,
             render=False,
         ),
         humans=_ns(
@@ -180,7 +215,7 @@ def build_config(task_name: str, env_config: Optional[Dict[str, Any]] = None) ->
         ),
         robot=_ns(
             visible=bool(task["robot_visible"]),
-            policy="srnn",
+            policy=robot_policy,
             radius=0.3,
             v_pref=1.0,
             sensor="coordinates",
@@ -198,7 +233,7 @@ def build_config(task_name: str, env_config: Optional[Dict[str, Any]] = None) ->
             data_save_dir="",
             pred_timestep=0.25,
         ),
-        pred=_ns(model_dir=""),
+        pred=_ns(model_dir=pred_model_dir),
         lidar=_ns(angular_res=5, range=10),
         sim2real=_ns(
             use_dummy_detect=True,
@@ -211,6 +246,8 @@ def build_config(task_name: str, env_config: Optional[Dict[str, Any]] = None) ->
         render_traj=False,
         save_slides=False,
         save_path=None,
+        # CARD-only marker (ignored by upstream configure).
+        card_stack="crowdnav_pp" if use_pp else "flat",
     )
 
 
@@ -222,8 +259,80 @@ def describe_action_space() -> str:
 
 
 def _episode_flags(episode_info: Any) -> Tuple[bool, bool, bool]:
-    name = type(episode_info).__name__
-    return name == "ReachGoal", name == "Collision", name == "Timeout"
+    """Map CrowdNav episode info to (success, collided, timeout).
+
+    Prefer class names (``ReachGoal`` / ``Collision`` / ``Timeout``), then
+    ``__str__`` markers and dict keys so upstream renames do not silently clear flags.
+    """
+    if isinstance(episode_info, dict):
+        success = bool(episode_info.get("success", False) or episode_info.get("is_success", False))
+        collided = bool(
+            episode_info.get("collided", False)
+            or episode_info.get("collision", False)
+        )
+        timeout = bool(episode_info.get("timeout", False))
+        return success, collided, timeout
+
+    name = type(episode_info).__name__.lower()
+    text = str(episode_info).lower()
+    success = name == "reachgoal" or "reaching goal" in text or "reachgoal" in name
+    collided = name == "collision" or text == "collision" or "collision" in name
+    timeout = name == "timeout" or text == "timeout" or "timeout" in name
+    return success, collided, timeout
+
+
+def _human_in_robot_fov(
+    robot,
+    human,
+    *,
+    sensor_range: float = SENSOR_RANGE,
+    fov_rad: Optional[float] = None,
+) -> bool:
+    """Match CrowdNav ``detect_visible(robot, human, robot1=True)`` (FOV × sensor range)."""
+    dx = float(human.px) - float(robot.px)
+    dy = float(human.py) - float(robot.py)
+    center_dist = math.hypot(dx, dy)
+    clearance = center_dist - float(getattr(human, "radius", 0.0)) - float(getattr(robot, "radius", 0.0))
+    if clearance > float(sensor_range):
+        return False
+    if fov_rad is None:
+        # CrowdNav config: FOV is a multiplier of π; default 2 → full 2π.
+        fov_mult = float(getattr(robot, "FOV", 2.0))
+        fov_rad = math.pi * fov_mult
+    if fov_rad >= (2.0 * math.pi) - 1e-9:
+        return True
+    if center_dist < 1e-8:
+        return True
+    heading = math.atan2(float(robot.vy), float(robot.vx))
+    bearing = math.atan2(dy, dx)
+    offset = abs((bearing - heading + math.pi) % (2.0 * math.pi) - math.pi)
+    return offset <= (fov_rad / 2.0)
+
+
+def _detected_human_num(sim) -> float:
+    """Count humans visible in the robot FOV / sensor range (CrowdNav++ semantics)."""
+    get_fov = getattr(sim, "get_num_human_in_fov", None)
+    if callable(get_fov):
+        try:
+            _visible, num_visibles, _masks = get_fov()
+            return float(num_visibles)
+        except Exception:  # noqa: BLE001
+            pass
+    robot = sim.robot
+    sensor_range = float(getattr(robot, "sensor_range", SENSOR_RANGE))
+    fov_rad = getattr(sim, "robot_fov", None)
+    if fov_rad is None:
+        fov_rad = math.pi * float(getattr(robot, "FOV", 2.0))
+    else:
+        fov_rad = float(fov_rad)
+    humans = getattr(sim, "humans", None) or []
+    return float(
+        sum(
+            1
+            for human in humans
+            if _human_in_robot_fov(robot, human, sensor_range=sensor_range, fov_rad=fov_rad)
+        )
+    )
 
 
 def _human_features(sim) -> Tuple[np.ndarray, float, float, float, float, np.ndarray, np.ndarray]:
@@ -282,7 +391,7 @@ def flatten_observation(sim) -> np.ndarray:
     out[12] = nearest_rel_v[1]
     out[13] = d1
     out[14] = d2
-    out[15] = float(len(sim.humans))
+    out[15] = _detected_human_num(sim)
     out[16:] = pad.reshape(-1)
     return out
 
@@ -464,6 +573,9 @@ class ContinuousTaskWrapper(gym.Wrapper):
 
     def step(self, action):
         ob, rew, done, info = super().step(action)
+        # Preserve simulator GT. Never overwrite with the LLM dense reward below.
+        if "ground_truth_reward" not in info:
+            info["ground_truth_reward"] = float(rew)
         if not self.use_ground_truth_reward:
             # ``self.pre_obs`` is the previous flat obs (for delta goal-distance).
             if getattr(self, "pre_obs", None) is None:
@@ -475,7 +587,6 @@ class ContinuousTaskWrapper(gym.Wrapper):
                     info[SUB_REWARD_PREFIX_LOCAL + key] = value
             else:
                 rew = result
-        info["ground_truth_reward"] = rew
         self._elapsed_steps += 1
         self.pre_obs = ob
         # Keep simulator terminals (success / collision). Only force-end on timeout.
@@ -501,10 +612,18 @@ class SuccessInfoWrapper(gym.Wrapper):
 
 
 def load_reward_function(code: str) -> None:
-    """Patch ContinuousTaskWrapper in *this* process (must run inside each Subproc worker)."""
+    """Patch reward wrappers in *this* process (must run inside each Subproc worker)."""
     namespace = {**globals(), "np": np, "Dict": Dict, "Tuple": Tuple}
     exec(code, namespace)
-    ContinuousTaskWrapper.compute_dense_reward = namespace["compute_dense_reward"]
+    fn = namespace["compute_dense_reward"]
+    ContinuousTaskWrapper.compute_dense_reward = fn
+    # CrowdNav++ dual-view path (imported lazily to avoid circular import at module load).
+    try:
+        from code_generation.self_reflection.crowdnav_pp_env import DualViewRewardWrapper
+
+        DualViewRewardWrapper.compute_dense_reward = fn
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def make_env(
@@ -526,17 +645,14 @@ def make_env(
         env.seed(seed)
         sim_horizon = int(getattr(env, "max_episode_steps", 200))
         horizon = int(max_episode_steps) if max_episode_steps is not None else sim_horizon
-        if not is_eval and max_episode_steps is not None:
-            env = ContinuousTaskWrapper(
-                args, env, horizon, is_eval=is_eval, use_ground_truth_reward=use_ground_truth_reward
-            )
-        elif is_eval and record_dir is not None:
-            env = ContinuousTaskWrapper(
-                args, env, horizon, is_eval=is_eval, use_ground_truth_reward=use_ground_truth_reward
-            )
+        # Always wrap: train and eval both need horizon / reward injection.
+        # ``record_dir`` is reserved for video adapters; do not gate wrapping on it.
+        _ = record_dir
+        env = ContinuousTaskWrapper(
+            args, env, horizon, is_eval=is_eval, use_ground_truth_reward=use_ground_truth_reward
+        )
+        if is_eval:
             env = SuccessInfoWrapper(env)
-        else:
-            raise RuntimeError("Environmental parameter conflicts!")
         return env
 
     return _init

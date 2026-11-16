@@ -1,8 +1,8 @@
 """Rollout recorder: capture per-step absolute state from ``env.sim``.
 
-Reads reward from the inner ``CrowdNavEnv`` (before ContinuousTaskWrapper), so
-``reward_raw`` is true simulator GT even if a wrapper later overwrites
-``info['ground_truth_reward']``.
+Reads reward from the inner ``CrowdNavEnv``. ``ContinuousTaskWrapper`` preserves
+``info['ground_truth_reward']`` (LLM dense reward only replaces the step return),
+but the recorder still prefers the inner env reward for ``reward_raw``.
 """
 
 from __future__ import annotations

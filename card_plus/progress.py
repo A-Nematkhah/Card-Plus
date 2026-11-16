@@ -111,13 +111,21 @@ def _robot_and_goal_2d(traj: Dict[str, Any]) -> tuple:
 
 
 def crowdnav_goal_progress(traj: Dict[str, Any]) -> float:
-    """CrowdNav: clip(1 - min_t ||robot_t - goal_t|| / d_0, 0, 1). Never uses GT reward."""
+    """CrowdNav progress from start distance toward the goal (never GT reward).
+
+    Uses a blend of final distance (70%) and best approach (30%) so a traj that
+    gets close then collides/timeouts is not scored like a true success.
+    """
     pos, goal = _robot_and_goal_2d(traj)
     dists = np.linalg.norm(pos - goal, axis=1)
     d0 = float(dists[0])
+    d_final = float(dists[-1])
+    d_best = float(np.min(dists))
     if d0 < 1e-12:
-        return 1.0 if float(np.min(dists)) <= 1e-12 else 0.0
-    return float(np.clip(1.0 - float(np.min(dists)) / d0, 0.0, 1.0))
+        return 1.0 if d_final <= 1e-12 else 0.0
+    prog_final = 1.0 - d_final / d0
+    prog_best = 1.0 - d_best / d0
+    return float(np.clip(0.7 * prog_final + 0.3 * prog_best, 0.0, 1.0))
 
 
 PROGRESS_FNS: Dict[str, ProgressFn] = {

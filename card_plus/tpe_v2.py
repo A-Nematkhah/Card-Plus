@@ -24,9 +24,40 @@ from card_plus.reward_utils import (
 logger = logging.getLogger(__name__)
 
 DENSE_SHAPING_FEEDBACK_TEMPLATE = """# Dense-Shaping Check
-Rank correlation between per-step return and task progress: full reward rho={rho_full:.2f}; without sparse components ({sparse_keys}) rho={rho_dense:.2f}.
-The ordering of trajectories is mostly produced by the sparse component(s), so the dense terms do not yet guide the agent toward task progress. Strengthen the dense shaping (e.g. terms that increase smoothly with progress) instead of only enlarging the sparse bonus.
+Rank correlation between per-step return and task progress: full reward rho={rho_full:.2f}; without sparse components ({sparse_keys}) rho={rho_dense:.2f} (gap={gap:.2f}).
+The ordering of trajectories is mostly produced by the sparse component(s), so the dense terms do not yet guide the agent toward task progress. Strengthen the dense shaping (e.g. terms that increase smoothly with progress) instead of only enlarging the sparse bonus. Prefer one small dense change at a time; do not weaken a working success/collision terminal signal.
 """
+
+
+def is_dense_shaping_hacked(
+    *,
+    pass_v1: bool,
+    rho_full: float,
+    rho_dense: float,
+    sparse_keys: Sequence[str],
+    cfg: CardPlusConfig,
+) -> bool:
+    """True only when v1 passes and sparse terms clearly carry progress ordering.
+
+    Requires:
+    - non-empty sparse keys
+    - dense correlation below ``tpe_v2_tau_dense``
+    - full-reward correlation at/above that tau (sparse/full still ranks progress)
+    - ``rho_full - rho_dense >= tpe_v2_sparse_gap``
+    """
+    if not pass_v1:
+        return False
+    if not sparse_keys:
+        return False
+    tau = float(cfg.tpe_v2_tau_dense)
+    gap = float(cfg.tpe_v2_sparse_gap)
+    if rho_dense >= tau:
+        return False
+    if rho_full < tau:
+        return False
+    if (rho_full - rho_dense) < gap:
+        return False
+    return True
 
 
 @dataclass
@@ -103,6 +134,7 @@ def format_dense_shaping_feedback(
         rho_full=rho_full,
         rho_dense=rho_dense,
         sparse_keys=keys_str,
+        gap=float(rho_full) - float(rho_dense),
     )
 
 
@@ -186,7 +218,13 @@ def run_tpe_v2(
             rho_full,
             cfg.tpe_v2_tau_dense,
         )
-    hacked = bool(pass_v1 and rho_dense < cfg.tpe_v2_tau_dense)
+    hacked = is_dense_shaping_hacked(
+        pass_v1=pass_v1,
+        rho_full=rho_full,
+        rho_dense=rho_dense,
+        sparse_keys=sparse_keys,
+        cfg=cfg,
+    )
     if no_success_pool:
         verdict = "hacked_no_success_pool" if hacked else (
             "pass_no_success_pool" if pass_v1 else "fail_no_success_pool"

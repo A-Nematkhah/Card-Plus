@@ -160,25 +160,51 @@ def select_best_reward_candidates(
             )
 
         if not slot_ok:
-            print_with_color(
-                f"  slot={slot} exhausted retries without a passing reward",
-                "YELLOW",
-            )
+            mode = str(getattr(gate_cfg, "dataset_mode", "gate") or "gate").lower()
+            # warn mode: after retries, soft-accept the best attempt of this slot.
+            if mode == "warn":
+                slot_attempts = [r for r in all_attempts if r.slot == slot]
+                if slot_attempts:
+                    best_slot = max(slot_attempts, key=lambda r: r.composite)
+                    best_slot.accepted = True
+                    accepted.append(best_slot)
+                    slot_ok = True
+                    print_with_color(
+                        f"  slot={slot}: dataset_mode=warn soft-accept "
+                        f"try={best_slot.attempt} composite={best_slot.composite:.4f}",
+                        "YELLOW",
+                    )
+            if not slot_ok:
+                print_with_color(
+                    f"  slot={slot} exhausted retries without a passing reward",
+                    "YELLOW",
+                )
         slot += 1
 
     if not accepted:
-        best_fail = (
-            max(all_attempts, key=lambda r: r.composite) if all_attempts else None
-        )
-        detail = (
-            f"best_fail_composite={best_fail.composite:.4f}"
-            if best_fail is not None
-            else "no attempts"
-        )
-        raise RuntimeError(
-            f"No reward candidate passed the dataset gate after {llm_calls} LLM calls "
-            f"({detail})."
-        )
+        mode = str(getattr(gate_cfg, "dataset_mode", "gate") or "gate").lower()
+        if mode == "warn" and all_attempts:
+            best_fail = max(all_attempts, key=lambda r: r.composite)
+            best_fail.accepted = True
+            accepted = [best_fail]
+            print_with_color(
+                f"dataset_mode=warn: soft-accepting best failed candidate "
+                f"slot={best_fail.slot} composite={best_fail.composite:.4f}",
+                "YELLOW",
+            )
+        else:
+            best_fail = (
+                max(all_attempts, key=lambda r: r.composite) if all_attempts else None
+            )
+            detail = (
+                f"best_fail_composite={best_fail.composite:.4f}"
+                if best_fail is not None
+                else "no attempts"
+            )
+            raise RuntimeError(
+                f"No reward candidate passed the dataset gate after {llm_calls} LLM calls "
+                f"({detail})."
+            )
 
     if len(accepted) < n_candidates:
         print_with_color(

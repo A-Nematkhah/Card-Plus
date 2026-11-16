@@ -1,4 +1,4 @@
-import json5
+import re
 from typing import Dict
 
 # Optional legacy LangChain imports (unused by RewardFunctionConverter).
@@ -12,6 +12,17 @@ except ImportError:
     BaseLanguageModel = None  # type: ignore
 
 
+def _safe_token_replace(text: str, old: str, new: str) -> str:
+    """Replace ``old`` with ``new`` only on identifier-like token boundaries."""
+    if not old:
+        return text
+    # If the token is a plain identifier, use word boundaries; otherwise fall back
+    # to literal replace (e.g. dotted paths like self.robot.position).
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", old):
+        return re.sub(rf"\b{re.escape(old)}\b", new, text)
+    return text.replace(old, new)
+
+
 class RewardFunctionConverter:
     def __init__(self, map_dict=None) -> None:
         self.map_dict = {k: map_dict[k] for k in
@@ -22,7 +33,7 @@ class RewardFunctionConverter:
 
         # replace specific terms with general terms
         for k, v in self.map_dict.items():
-            general_code = general_code.replace(v, k)
+            general_code = _safe_token_replace(general_code, v, k)
 
         return general_code
 
@@ -32,5 +43,5 @@ class RewardFunctionConverter:
 
         # replace general terms with specific terms
         for k, v in self.map_dict.items():
-            specific_code = specific_code.replace(k, v)
+            specific_code = _safe_token_replace(specific_code, k, v)
         return specific_code

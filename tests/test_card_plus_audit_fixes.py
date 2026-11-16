@@ -96,6 +96,7 @@ def test_stats_then_rollback_order_and_version_label(tmp_path):
         card_plus_max_step=5,
         score_last_k_evals=1,
         max_feedback_lines=40,
+        tpe_v2_min_trajs=1,
     )
     arch = RewardArchive(run_dir=str(tmp_path), cfg=cfg)
     arch.add(
@@ -122,6 +123,9 @@ def test_stats_then_rollback_order_and_version_label(tmp_path):
         "sub_reward/a": np.ones(t),
     }
     process = "1.process feedback\n2.trajectory feedback"
+    code_path = tmp_path / "code_1" / "specific_1.py"
+    code_path.parent.mkdir(parents=True, exist_ok=True)
+    code_path.write_text("def worse():\n    return 0\n", encoding="utf-8")
     out = apply_card_plus_after_baseline(
         process,
         cfg,
@@ -137,12 +141,16 @@ def test_stats_then_rollback_order_and_version_label(tmp_path):
         pass_v1=True,
         acc_v1=1.0,
         run_dir=str(tmp_path),
+        specific_code_path=str(code_path),
     )
     i_proc = out.find("1.process feedback")
     i_stats = out.find("# Sub-reward Statistics")
     i_rb = out.find("# Rollback Notice")
     assert 0 <= i_proc < i_stats < i_rb
     assert "for reward version 2" in out
+    assert "restored to version" in out
+    assert code_path.read_text(encoding="utf-8") == "def best():\n    return 1\n"
+    assert (code_path.parent / "specific_1.failed.py").exists()
 
 
 def test_sparse_subtraction_when_total_neq_sum_components():

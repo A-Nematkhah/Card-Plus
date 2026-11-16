@@ -108,6 +108,10 @@ def _is_non_retryable_client_error(exc: Exception) -> bool:
         return True
     if status in (401, 403):
         return True
+    # xAI credits / account spending cap — retrying other keys usually will not help
+    # when the org budget is exhausted, and burning attempts hides the real cause.
+    if status == 402 or "spending-limit" in text or "spending limit" in text:
+        return True
     if status == 404 or "model_not_found" in text or "does not exist" in text:
         return True
     if status == 400 and "model" in text:

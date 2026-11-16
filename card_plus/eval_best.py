@@ -120,15 +120,32 @@ def main() -> None:
         specific_code_path=code_path,
         load_model=False,
     )
-    out = Path(args.log_path) / "card_plus_best" / "final_eval.json"
+    from card_plus.archive import (
+        extract_mean_return,
+        extract_success_curve,
+        score_from_curve,
+        success_curve_auc,
+    )
+
+    curve = extract_success_curve(learning_result)
+    last_k = int(getattr(run_args, "score_last_k_evals", 3) or 3)
     summary = {
         "eval_seed": args.eval_seed,
         "selection_seed": args.selection_seed,
         "version": info["version"],
         "keys": list(learning_result.keys()) if isinstance(learning_result, dict) else [],
+        "success_curve": curve,
+        "version_score": score_from_curve(curve, last_k) if curve else None,
+        "curve_auc": success_curve_auc(curve) if curve else None,
+        "mean_return": extract_mean_return(learning_result, last_k=last_k),
+        "last_k": last_k,
     }
+    out = Path(args.log_path) / "card_plus_best" / "final_eval.json"
     out.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    print(f"wrote {out}")
+    print(
+        f"wrote {out} "
+        f"(score={summary['version_score']} mean_return={summary['mean_return']})"
+    )
 
 
 if __name__ == "__main__":

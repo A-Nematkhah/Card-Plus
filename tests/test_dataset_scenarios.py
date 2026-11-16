@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -104,3 +105,30 @@ def test_select_hard_soft_fill_when_enabled():
     picked = select_hard_scenarios(pool, keep=3, min_near_path=9.0, allow_soft_fill=True)
     assert len(picked) == 3
     assert picked[0].test_case == 0
+
+
+def test_select_min_clearance_rejects_path_intersect():
+    pool = [
+        _fake_spec(0, near=2, clearance=-0.2),
+        _fake_spec(1, near=2, clearance=0.5),
+        _fake_spec(2, near=3, clearance=0.1),
+    ]
+    picked = select_hard_scenarios(pool, keep=3, min_near_path=0.0, min_clearance=0.2)
+    assert [s.test_case for s in picked] == [1]
+
+
+def test_select_balanced_mixes_buckets():
+    pool = (
+        [_fake_spec(i, near=0, clearance=1.0) for i in range(10)]
+        + [_fake_spec(100 + i, near=1, clearance=0.35) for i in range(10)]
+        + [_fake_spec(200 + i, near=3, clearance=0.3) for i in range(10)]
+    )
+    picked = select_hard_scenarios(
+        pool, keep=10, min_near_path=0.0, min_clearance=0.2, selection="balanced"
+    )
+    assert len(picked) == 10
+    from card_plus.dataset.scenarios import _bucket_name
+
+    counts = Counter(_bucket_name(s) for s in picked)
+    assert counts["easy"] >= 4
+    assert counts["hard"] >= 1

@@ -114,14 +114,24 @@ def score_episode(episode: Episode, reward_fn: RewardFn) -> np.ndarray:
     return np.asarray(out, dtype=np.float64)
 
 
-def _episode_mean_return(rewards: np.ndarray) -> float:
+def _episode_return(rewards: np.ndarray) -> float:
+    """Episode score aligned with RL: cumulative (sum) return, not mean step reward."""
     if rewards.size == 0:
         return 0.0
-    return float(np.mean(rewards))
+    return float(np.sum(rewards))
 
 
-def _progress_auc(episodes: Sequence[Episode], returns: Sequence[float]) -> float:
-    """Mann–Whitney-style AUC: P(return_success > return_fail) + 0.5 ties."""
+# Back-compat name; implementation is sum (matches online SAC objective).
+_episode_mean_return = _episode_return
+
+
+def outcome_return_auc(episodes: Sequence[Episode], returns: Sequence[float]) -> float:
+    """Mann–Whitney AUC on episode returns: P(return_success > return_fail) + 0.5 ties.
+
+    Despite the historical field name ``progress_auc`` on ``RescoreReport``, this is
+    **not** an AUC of the task-progress measure — it ranks episode returns by outcome.
+    Returns are cumulative (sum) rewards, matching the online RL objective.
+    """
     succ = [r for ep, r in zip(episodes, returns) if (ep.labels or label_episode(ep)).outcome == "success"]
     fail = [r for ep, r in zip(episodes, returns) if (ep.labels or label_episode(ep)).outcome != "success"]
     if not succ or not fail:
@@ -136,24 +146,31 @@ def _progress_auc(episodes: Sequence[Episode], returns: Sequence[float]) -> floa
     return float(wins / (len(succ) * len(fail)))
 
 
+# Back-compat alias (name was misleading; prefer outcome_return_auc).
+_progress_auc = outcome_return_auc
+
+
 def _pair_accuracy(
     episodes: Sequence[Episode],
     returns: Sequence[float],
     a: str,
     b: str,
 ) -> PairAccuracy:
-    """Prefer higher return on outcome ``a`` vs ``b`` (CARD preference style)."""
+    """Prefer higher return on outcome ``a`` vs ``b`` (CARD preference style).
+
+    Ties count as 0.5 (same policy as ``outcome_return_auc``).
+    """
     group_a = [r for ep, r in zip(episodes, returns) if (ep.labels or label_episode(ep)).outcome == a]
     group_b = [r for ep, r in zip(episodes, returns) if (ep.labels or label_episode(ep)).outcome == b]
     n = 0
-    correct = 0
+    correct = 0.0
     for ra in group_a:
         for rb in group_b:
             n += 1
             if ra > rb:
-                correct += 1
+                correct += 1.0
             elif ra == rb:
-                correct += 0  # strict: ties count as wrong for preference
+                correct += 0.5
     acc = float(correct / n) if n else float("nan")
     return PairAccuracy(pair=f"{a}/{b}", n_pairs=n, accuracy=acc)
 
@@ -164,7 +181,7 @@ def tpe_v1_rate(
     *,
     threshold: float = 0.8,
 ) -> Optional[float]:
-    """Fraction of successful episodes whose mean return beats max failed mean.
+    """Fraction of successful episodes whose return beats max failed return.
 
     Mirrors this repo's ``trajectories_return_check`` style (not pairwise γ-TPE).
     """
@@ -200,6 +217,7 @@ def _finalize_report(
         _pair_accuracy(labeled, returns, "timeout", "collided"),
     ]
     rate = tpe_v1_rate(labeled, returns, threshold=threshold)
+    ret_auc = outcome_return_auc(labeled, returns)
     extra = {
         "threshold": threshold,
         "tpe_v1_pass": None if rate is None else bool(rate >= threshold),
@@ -208,6 +226,9 @@ def _finalize_report(
         )
         if labeled
         else 0.0,
+        "outcome_return_auc": ret_auc,
+        "progress_auc_meaning": "outcome_return_auc(success vs fail cumulative returns)",
+        "episode_return": "sum",
     }
     if extras:
         extra.update(extras)
@@ -215,7 +236,7 @@ def _finalize_report(
         n_episodes=len(labeled),
         mean_return=float(np.mean(returns)) if returns else 0.0,
         outcome_counts=counts,
-        progress_auc=_progress_auc(labeled, returns),
+        progress_auc=ret_auc,
         tpe_v1_rate=rate,
         pair_accuracies=pairs,
         extras=extra,
@@ -240,14 +261,14 @@ def rescore_episodes_detailed(
     *,
     threshold: float = 0.8,
 ) -> Tuple[RescoreReport, List[Episode], List[float]]:
-    """Like ``rescore_episodes`` but also returns labeled episodes and mean returns."""
+    """Like ``rescore_episodes`` but also returns labeled episodes and cumulative returns."""
     labeled: List[Episode] = []
     returns: List[float] = []
     for ep in episodes:
         if ep.labels is None:
             ep.labels = label_episode(ep)
         labeled.append(ep)
-        returns.append(_episode_mean_return(score_episode(ep, reward_fn)))
+        returns.append(_episode_return(score_episode(ep, reward_fn)))
     return _finalize_report(labeled, returns, threshold=threshold), labeled, returns
 
 
@@ -256,14 +277,14 @@ def rescore_episodes_stored_gt(
     *,
     threshold: float = 0.8,
 ) -> RescoreReport:
-    """Use stored ``reward_raw`` means (simulator GT) — no (action, obs) re-score."""
+    """Use stored ``reward_raw`` cumulative returns (simulator GT) — no (action, obs) re-score."""
     labeled = []
     returns = []
     for ep in episodes:
         if ep.labels is None:
             ep.labels = label_episode(ep)
         labeled.append(ep)
-        returns.append(_episode_mean_return(ep.rewards_raw_array()))
+        returns.append(_episode_return(ep.rewards_raw_array()))
     return _finalize_report(
         labeled, returns, threshold=threshold, extras={"reward": "gt_stored"}
     )

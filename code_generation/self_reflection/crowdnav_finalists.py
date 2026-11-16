@@ -17,15 +17,11 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
-from stable_baselines3 import SAC
-
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from card_plus.archive import RewardArchive, VersionRecord, extract_success_curve
 from card_plus.config import add_card_plus_arguments
 from card_plus.dataset.gate import _json_safe, add_dataset_gate_arguments
-from code_generation.self_reflection.crowdnav_env_utils import make_env
-from code_generation.self_reflection.crowdnav_exp_one_step import train_and_eval
 from code_generation.self_reflection.utils import Logger, print_with_color
 
 LOW_SCORE_SPREAD = 0.05
@@ -55,13 +51,14 @@ def select_top_versions(
     spread = max(scores) - min(scores) if scores else 0.0
     low_var = spread < float(low_spread)
 
-    def key(v: VersionRecord) -> Tuple[float, float, float, float, int]:
+    def key(v: VersionRecord) -> Tuple[float, float, float, float, float, int]:
         score = float(v.version_score or 0.0)
         peak = _peak_success(v)
         auc = float(v.curve_auc or 0.0)
+        mean_ret = float(v.mean_return) if v.mean_return is not None else float("-1e18")
         if low_var:
-            return (peak, auc, score, max(score, peak), -int(v.iteration))
-        return (max(score, peak), peak, auc, score, -int(v.iteration))
+            return (peak, auc, mean_ret, score, max(score, peak), -int(v.iteration))
+        return (max(score, peak), peak, mean_ret, auc, score, -int(v.iteration))
 
     ranked = sorted(scored, key=key, reverse=True)
     k = max(1, int(top_k))
@@ -73,7 +70,7 @@ def short_checkpoint_path(log_path: Path, iteration: int, seed: int) -> Optional
     code_step = int(iteration) - 1
     if code_step < 0:
         return None
-    for name in ("latest_model.zip", "latest_model"):
+    for name in ("latest_model.pt", "latest_model.zip", "latest_model"):
         p = (
             log_path
             / f"code_{code_step}"
@@ -81,8 +78,12 @@ def short_checkpoint_path(log_path: Path, iteration: int, seed: int) -> Optional
             / "tensorboard_log"
             / name
         )
-        if p.is_file() or p.with_suffix(".zip").is_file():
-            return p if p.is_file() else p.with_suffix(".zip")
+        if p.is_file() or p.with_suffix(".zip").is_file() or p.with_suffix(".pt").is_file():
+            if p.is_file():
+                return p
+            if p.with_suffix(".pt").is_file():
+                return p.with_suffix(".pt")
+            return p.with_suffix(".zip")
     best = (
         log_path
         / f"code_{code_step}"
@@ -103,21 +104,27 @@ def held_out_eval(
     n_episodes: int,
 ) -> dict:
     """Deterministic rollout eval; seed must differ from training seed."""
-    model = SAC.load(model_path)
-    env = make_env(
-        args,
+    from code_generation.self_reflection.crowdnav_pp_env import make_dual_view_env
+    from code_generation.self_reflection.crowdnav_ppo_train import load_policy_adapter
+
+    model, _vec = load_policy_adapter(
+        model_path, task_name=str(getattr(args, "task_name", "circle-crossing-v0")), seed=int(eval_seed)
+    )
+    _vec.close()
+    env = make_dual_view_env(
+        str(getattr(args, "task_name", "circle-crossing-v0")),
         seed=int(eval_seed),
-        max_episode_steps=int(getattr(args, "max_episode_steps", 200)),
-        record_dir="logs/videos",
-        is_eval=True,
+        phase="test",
         use_ground_truth_reward=False,
         reward_code=reward_code,
-    )()
+        max_episode_steps=int(getattr(args, "max_episode_steps", 200)),
+    )
     successes: List[float] = []
     returns: List[float] = []
     lengths: List[int] = []
     try:
         for _ in range(int(n_episodes)):
+            model.reset_hidden()
             obs = env.reset()
             done = False
             ep_ret = 0.0
@@ -199,6 +206,9 @@ def main() -> None:
     sys.stdout = logger
     sys.stderr = logger
 
+    # Heavy imports only when actually continuing training (keeps unit tests light).
+    from code_generation.self_reflection.crowdnav_exp_one_step import train_and_eval
+
     archive = RewardArchive(run_dir=str(log_path))
     finalists = select_top_versions(archive.versions, args.top_k)
     if not finalists:
@@ -237,8 +247,11 @@ def main() -> None:
 
         ckpt = short_checkpoint_path(log_path, int(v.iteration), int(args.seed))
         if ckpt is None:
+            # Same total budget as resume path (short+extra == target), but cold start.
             print_with_color(
-                f"Finalist iter={v.iteration}: no short checkpoint; training {target} from scratch",
+                f"Finalist iter={v.iteration}: no short checkpoint; "
+                f"training full target={target} from scratch "
+                f"(same total steps as resume path, no warm start)",
                 "YELLOW",
             )
             learning_result, _, _ = train_and_eval(

@@ -1,10 +1,10 @@
 import re
 import time
-from typing import Any, List, Mapping, Optional, Tuple
+from string import Formatter
+from typing import Any, List, Optional, Tuple
 import sys, os
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-import torch
-from transformers import AutoTokenizer, pipeline
 
 try:
     from langchain_openai import AzureChatOpenAI
@@ -14,29 +14,6 @@ except ImportError:
     except ImportError:
         AzureChatOpenAI = None  # type: ignore
 
-try:
-    from langchain.callbacks.manager import CallbackManagerForLLMRun
-    from langchain.llms.base import LLM
-except ImportError:
-    CallbackManagerForLLMRun = None  # type: ignore
-    LLM = object  # type: ignore
-
-try:
-    from langchain.prompts.chat import (
-        ChatPromptTemplate,
-        SystemMessagePromptTemplate,
-        HumanMessagePromptTemplate,
-    )
-except ImportError:
-    from langchain_core.prompts.chat import (
-        ChatPromptTemplate,
-        SystemMessagePromptTemplate,
-        HumanMessagePromptTemplate,
-    )
-try:
-    from langchain.schema import AIMessage, BaseMessage
-except ImportError:
-    from langchain_core.messages import AIMessage, BaseMessage
 from code_generation.post_process.post_process import RewardFunctionConverter
 from code_generation.self_reflection.utils import print_with_color
 from key_manager import get_xai_key_manager, is_xai_model
@@ -47,12 +24,98 @@ DEFAULT_XAI_REASONING_EFFORT = "high"
 _CHAT_ROLES = {"system": "system", "human": "user", "ai": "assistant"}
 
 
+# ---------------------------------------------------------------------------
+# Minimal chat message / prompt helpers (no langchain / transformers required)
+# ---------------------------------------------------------------------------
+
+class BaseMessage:
+    type: str = "human"
+
+    def __init__(self, content: str = "", **_: Any) -> None:
+        self.content = content
+
+
+class HumanMessage(BaseMessage):
+    type = "human"
+
+
+class AIMessage(BaseMessage):
+    type = "ai"
+
+
+class SystemMessage(BaseMessage):
+    type = "system"
+
+
+def _format_template(template: str, **kwargs: Any) -> str:
+    """str.format with LangChain-style {{ / }} escaping; leftover braces stay literal."""
+    if not kwargs:
+        return template
+    unused = {
+        name: "{" + name + "}"
+        for _, name, _, _ in Formatter().parse(template)
+        if name and name not in kwargs
+    }
+    return template.format(**kwargs, **unused)
+
+
+class _PromptTemplate:
+    def __init__(self, template: str, message_cls):
+        self.template = template
+        self.message_cls = message_cls
+
+    @classmethod
+    def from_template(cls, template: str):
+        raise NotImplementedError
+
+    def format(self, **kwargs: Any):
+        return self.message_cls(content=_format_template(self.template, **kwargs))
+
+
+class SystemMessagePromptTemplate(_PromptTemplate):
+    def __init__(self, template: str):
+        super().__init__(template, SystemMessage)
+
+    @classmethod
+    def from_template(cls, template: str):
+        return cls(template)
+
+
+class HumanMessagePromptTemplate(_PromptTemplate):
+    def __init__(self, template: str):
+        super().__init__(template, HumanMessage)
+
+    @classmethod
+    def from_template(cls, template: str):
+        return cls(template)
+
+
+class _FormattedPrompt:
+    def __init__(self, messages: List[BaseMessage]):
+        self._messages = messages
+
+    def to_messages(self) -> List[BaseMessage]:
+        return list(self._messages)
+
+
+class ChatPromptTemplate:
+    def __init__(self, messages: List[BaseMessage]):
+        self._messages = list(messages)
+
+    @classmethod
+    def from_messages(cls, messages: List[BaseMessage]):
+        return cls(messages)
+
+    def format_prompt(self, **_: Any) -> _FormattedPrompt:
+        return _FormattedPrompt(self._messages)
+
+
 def _strip_think_tags(content: str) -> str:
     return re.sub(r"<think>.*?</think>", "", content or "", flags=re.DOTALL).strip()
 
 
 class XAIChatModel:
-    """LangChain-style chat model backed by xAI (Grok)."""
+    """Chat model backed by xAI (Grok); no langchain dependency."""
 
     def __init__(self, model_name: str, temperature: float, reasoning_effort: Optional[str] = DEFAULT_XAI_REASONING_EFFORT) -> None:
         self.model_name = model_name
@@ -121,11 +184,6 @@ class ZeroShotGenerator:
         success_flag = False
         response = general_code = specific_code = None
 
-        try:
-            from langchain.schema import HumanMessage
-        except ImportError:
-            from langchain_core.messages import HumanMessage
-
         while try_num + 1 <= self.max_try_num:
             try_num += 1
             response = self.llm.invoke(messages)
@@ -163,7 +221,18 @@ class ZeroShotGenerator:
                     )
                 )
                 continue
-            time.sleep(10)
+            # No fenced code block: ask explicitly instead of blind sleep/retry.
+            messages.append(response)
+            messages.append(
+                HumanMessage(
+                    content=(
+                        "Your previous reply did not contain a Python code block. "
+                        "Return exactly one reward function inside a ```python``` fence "
+                        "and nothing else outside that fence."
+                    )
+                )
+            )
+            time.sleep(1)
             continue
 
         if success_flag:
@@ -208,10 +277,6 @@ class ZeroShotGenerator:
         self.message_history.append(self_reflection_message)
 
     def append_human(self, content: str) -> None:
-        try:
-            from langchain.schema import HumanMessage
-        except ImportError:
-            from langchain_core.messages import HumanMessage
         self.message_history.append(HumanMessage(content=content))
 
     def propose_reward(self, map_dict: dict, step: int, generate_type: str = "propose"):

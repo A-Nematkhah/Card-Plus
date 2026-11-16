@@ -169,8 +169,9 @@ def intra_scenario_score(
         n_used += 1
 
     if not corrs:
+        # Undefined (no multi-episode scenarios) — NaN so composite can drop this term.
         return {
-            "intra_scenario": 0.0,
+            "intra_scenario": float("nan"),
             "intra_spearman_raw": float("nan"),
             "intra_n_scenarios": 0.0,
         }
@@ -210,7 +211,10 @@ def offline_rank_score(
     w_timeout_collided: float = 0.25,
     w_progress_auc: float = 0.15,
 ) -> float:
-    """Legacy weighted pair-accuracy + progress_auc (often ~0.95–1.0)."""
+    """Legacy weighted pair-accuracy + outcome-return AUC (often ~0.95–1.0).
+
+    ``report.progress_auc`` is historically named but means outcome_return_auc.
+    """
     pairs = {pa.pair: float(pa.accuracy) for pa in report.pair_accuracies if pa.n_pairs > 0}
     a = pairs.get("success/collided", float("nan"))
     b = pairs.get("success/timeout", float("nan"))
@@ -247,6 +251,9 @@ def calibrated_composite(
 
     Rank weight is kept low because it saturates near 1.0; separation, anti-hack,
     and intra-scenario ranking provide most of the discrimination.
+
+    NaN components are treated as 0.0 **without dropping their weight** so thin
+    datasets (undefined intra) cannot inflate the composite by renormalizing.
     """
     parts = [
         (float(offline_rank), float(w_rank)),
@@ -254,7 +261,11 @@ def calibrated_composite(
         (float(anti_hack), float(w_hack)),
         (float(intra_scenario), float(w_intra)),
     ]
-    vals = [(v, w) for v, w in parts if v == v]
+    vals: List[tuple] = []
+    for v, w in parts:
+        if w <= 0:
+            continue
+        vals.append((0.0 if v != v else float(v), float(w)))
     if not vals:
         return 0.0
     return float(sum(v * w for v, w in vals) / sum(w for _, w in vals))

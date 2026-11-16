@@ -16,14 +16,36 @@ def _clip_action(action: np.ndarray) -> np.ndarray:
     return np.clip(a, -1.0, 1.0).astype(np.float32)
 
 
-def go_to_goal_policy(obs: np.ndarray) -> np.ndarray:
-    """Unit direction toward goal in obs frame (obs[0:2] pos, obs[4:6] goal)."""
+def go_to_goal_policy(obs: np.ndarray, *, speed: float = 1.0) -> np.ndarray:
+    """Direction toward goal in obs frame (obs[0:2] pos, obs[4:6] goal)."""
     obs = np.asarray(obs, dtype=np.float64).reshape(-1)
     delta = obs[4:6] - obs[0:2]
     n = float(np.linalg.norm(delta))
     if n < 1e-8:
         return np.zeros(2, dtype=np.float32)
-    return _clip_action(delta / n)
+    scale = float(np.clip(speed, 0.0, 1.0))
+    return _clip_action((delta / n) * scale)
+
+
+def make_go_to_goal_policy(speed: float = 1.0) -> PolicyFn:
+    spd = float(speed)
+
+    def _fn(obs: np.ndarray) -> np.ndarray:
+        return go_to_goal_policy(obs, speed=spd)
+
+    return _fn
+
+
+def flee_nearest_human_policy(obs: np.ndarray) -> np.ndarray:
+    """Move opposite the nearest-human relative vector (obs[9:11])."""
+    obs = np.asarray(obs, dtype=np.float64).reshape(-1)
+    if obs.shape[0] < 11:
+        return np.zeros(2, dtype=np.float32)
+    rel = obs[9:11]
+    n = float(np.linalg.norm(rel))
+    if n < 1e-8:
+        return np.zeros(2, dtype=np.float32)
+    return _clip_action(-rel / n)
 
 
 def stationary_policy(obs: np.ndarray) -> np.ndarray:
@@ -94,10 +116,14 @@ def wrap_noisy_policy(
 def get_policy(name: str, **kwargs) -> PolicyFn:
     key = str(name).strip().lower()
     if key in ("go_to_goal", "goto", "greedy"):
-        return go_to_goal_policy
+        return make_go_to_goal_policy(speed=float(kwargs.get("speed", 1.0)))
+    if key in ("slow_go_to_goal", "slow_goto"):
+        return make_go_to_goal_policy(speed=float(kwargs.get("speed", 0.35)))
+    if key in ("flee", "flee_human", "flee_nearest_human"):
+        return flee_nearest_human_policy
     if key in ("noisy_go_to_goal", "noisy_goto"):
         return wrap_noisy_policy(
-            go_to_goal_policy,
+            make_go_to_goal_policy(speed=1.0),
             noise_std=float(kwargs.get("noise_std", 0.3)),
             seed=int(kwargs.get("seed", 0)),
         )

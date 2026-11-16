@@ -28,6 +28,12 @@ class CardPlusConfig:
     tpe_v2_mode: str = "warn"  # "warn" | "gate"
     tpe_v2_min_trajs: int = 10
     tpe_v2_tau_dense: float = 0.3
+    # Require full-reward progress correlation AND a sparse-vs-dense gap before
+    # labeling "hacked". Avoids false positives when both rho_full and rho_dense
+    # are weak/negative (common with distance penalties that still train well).
+    tpe_v2_sparse_gap: float = 0.2
+    # If on-policy last-k success is at least this, omit dense-shaping nag text.
+    suppress_hacked_feedback_score: float = 0.9
     progress_validation_auc_min: float = 0.9
 
     def to_dict(self) -> Dict[str, Any]:
@@ -87,6 +93,18 @@ def add_card_plus_arguments(parser: Any) -> None:
     g.add_argument("--tpe_v2_mode", type=str, default="warn", choices=["warn", "gate"])
     g.add_argument("--tpe_v2_min_trajs", type=int, default=10)
     g.add_argument("--tpe_v2_tau_dense", type=float, default=0.3)
+    g.add_argument(
+        "--tpe_v2_sparse_gap",
+        type=float,
+        default=0.2,
+        help="Min (rho_full - rho_dense) required with rho_full>=tau to flag hacked.",
+    )
+    g.add_argument(
+        "--suppress_hacked_feedback_score",
+        type=float,
+        default=0.9,
+        help="Omit dense-shaping feedback when version_score >= this (on-policy).",
+    )
     g.add_argument("--progress_validation_auc_min", type=float, default=0.9)
 
 

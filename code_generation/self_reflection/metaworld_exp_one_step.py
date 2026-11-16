@@ -62,6 +62,9 @@ class ContinuousTaskWrapper(gym.Wrapper):
     def step(self, action):
         ob, rew, done, info = super().step(action)
         info["self.env._get_pos_goal()"] = self.env._get_pos_goal()
+        # Preserve simulator GT. Never overwrite with the LLM dense reward below.
+        if "ground_truth_reward" not in info:
+            info["ground_truth_reward"] = float(rew)
         if not self.use_ground_truth_reward:
             result = self.compute_dense_reward(action, ob)
             if isinstance(result, tuple):
@@ -70,7 +73,6 @@ class ContinuousTaskWrapper(gym.Wrapper):
                     info[SUB_REWARD_PREFIX+key] = value
             else:
                 rew = result
-        info["ground_truth_reward"] = rew
         self._elapsed_steps += 1
         if self._elapsed_steps >= self._max_episode_steps:
             done = True
@@ -100,13 +102,13 @@ def make_env(args, seed, max_episode_steps: int = None, record_dir: str = None, 
 
         env = NormalizedBoxEnv(env=env, seed=seed)
 
-        if not is_eval and max_episode_steps is not None:
-            env = ContinuousTaskWrapper(args, env, max_episode_steps, is_eval=is_eval, use_ground_truth_reward=use_ground_truth_reward)
-        elif is_eval and record_dir is not None:
-            env = ContinuousTaskWrapper(args, env, env.max_path_length, is_eval=is_eval, use_ground_truth_reward=use_ground_truth_reward)
+        horizon = int(max_episode_steps) if max_episode_steps is not None else int(env.max_path_length)
+        _ = record_dir  # reserved for video adapters
+        env = ContinuousTaskWrapper(
+            args, env, horizon, is_eval=is_eval, use_ground_truth_reward=use_ground_truth_reward
+        )
+        if is_eval:
             env = SuccessInfoWrapper(env)
-        else:
-            raise RuntimeError("Environmental parameter conflicts!")
         return env
 
     return _init
@@ -223,9 +225,12 @@ def train_and_eval(args, seed, step, use_ground_truth_reward: bool, specific_cod
     # load evaluations.npz and add extra info
     learning_result = np.load(os.path.join(eval_log_path, "evaluations.npz"))
     learning_result = {key: learning_result[key] for key in learning_result.files}
-    extra_info = np.load(os.path.join(eval_log_path, log_file_name))
-    extra_info = {key: extra_info[key] for key in extra_info.files}
-    learning_result.update(extra_info)
+    extra_path = os.path.join(eval_log_path, log_file_name)
+    if os.path.isfile(extra_path):
+        extra_info = np.load(extra_path)
+        learning_result.update({key: extra_info[key] for key in extra_info.files})
+    else:
+        print_with_color(f"extra_info missing at {extra_path}; continuing without sub-reward series", "YELLOW")
     # get trajectories, train env for same episode length
     check_traj_env = make_env(args, seed=seed, record_dir="logs/videos", is_eval=True,
                                        use_ground_truth_reward=use_ground_truth_reward)()
@@ -304,7 +309,12 @@ if __name__ == '__main__':
 
     # ablation
     parser.add_argument('--exclude', type=str, default=None)
-    parser.add_argument('--query_restart', type=bool, default=True)
+    parser.add_argument(
+        '--query_restart',
+        type=lambda x: str(x).strip().lower() in ("1", "true", "yes", "y"),
+        default=True,
+        help="Unused legacy flag (kept for CLI compatibility). Prefer True/False strings.",
+    )
 
     # CARD+ (all default False / baseline-preserving)
     add_card_plus_arguments(parser)
@@ -347,9 +357,9 @@ if __name__ == '__main__':
             if load_success:
                 general_code_path = os.path.join(args.log_path, f"code_{args.step-1}", f"general_{args.step-1}.py")
                 specific_code_path = os.path.join(args.log_path, f"code_{args.step-1}", f"specific_{args.step-1}.py")
-                with open(general_code_path, "r") as f:
+                with open(general_code_path, "r", encoding="utf-8") as f:
                     general_code = f.read()
-                with open(specific_code_path, "r") as f:
+                with open(specific_code_path, "r", encoding="utf-8") as f:
                     specific_code = f.read()
                 message_history = loaded_objects_dict["message_history"]
                 trajectories_for_check_list = loaded_objects_dict["trajectories_for_check_list"]
@@ -382,8 +392,8 @@ if __name__ == '__main__':
                 print(f"checkpoint path is: {checkpoint_file}" + "="*20)
             else:
                 # save checkpoint
-                if args.use_return_check:
-                    # 2.1 trajectories return check
+                if args.use_return_check and trajectories_for_check_list:
+                    # 2.1 trajectories return check (skip when pool empty — first step)
                     external_call_reward_code = convert_function_external(reward_function_code=specific_code, benchmark_name=args.benchmark_name)
                     load_reward_function(code=external_call_reward_code)
                     reward_function = ContinuousTaskWrapper.compute_dense_reward
@@ -395,7 +405,6 @@ if __name__ == '__main__':
                                             log_interval=args.log_interval,
                                             benchmark_name=args.benchmark_name,
                                             env=None)
-                    # CARD+ TPE v2 (opt-in): reuse offline re-eval on stored pool
                     if card_plus_cfg.use_tpe_v2:
                         tpe_v2_result = run_optional_tpe_v2(
                             card_plus_cfg,
@@ -405,6 +414,9 @@ if __name__ == '__main__':
                             task_name=args.task_name,
                             reward_fn=reward_function,
                         )
+                elif args.use_return_check:
+                    pass_flag = True
+                    check_feedback = "return check deferred: trajectory pool empty on this step.\n"
 
                 skip_rl = bool(
                     card_plus_cfg.use_tpe_v2
@@ -466,36 +478,54 @@ if __name__ == '__main__':
             if (not rl_ran) and card_plus_cfg.use_tpe_v2 and card_plus_cfg.tpe_v2_mode == "gate":
                 effective_pass = False
 
+            learning_result_feedback = ""
+            eval_feedback = ""
             if rl_ran and learning_result is not None:
-                learning_result_feedback = get_learning_result_feedback_simple(learning_result=learning_result, log_point_num=args.log_point_num)
-                eval_feedback = get_eval_feedback(trajectory_list=diff_len_trajectories,
-                                        mapping_dicts=mapping_dicts,
-                                        log_interval=args.log_interval)
-            else:
-                learning_result_feedback = ""
-                eval_feedback = ""
+                try:
+                    learning_result_feedback = get_learning_result_feedback_simple(
+                        learning_result=learning_result, log_point_num=args.log_point_num
+                    )
+                except Exception as exc:
+                    learning_result_feedback = f"learning-result feedback unavailable: {exc}\n"
+                    print_with_color(learning_result_feedback, "YELLOW")
+                try:
+                    eval_feedback = get_eval_feedback(
+                        trajectory_list=diff_len_trajectories,
+                        mapping_dicts=mapping_dicts,
+                        log_interval=args.log_interval,
+                        benchmark_name=args.benchmark_name,
+                    )
+                except Exception as exc:
+                    eval_feedback = f"trajectory feedback unavailable: {exc}\n"
+                    print_with_color(eval_feedback, "YELLOW")
 
-            # Baseline (git 6e1df1c) assembly. Gate-skip uses effective_pass so
-            # preference feedback is sent when RL was skipped; flags-False never skips.
+            # Baseline assembly. Gate-skip uses effective_pass so preference
+            # feedback is sent when RL was skipped; flags-False never skips.
             baseline_pass = effective_pass
-            feedback_str, extend_pool = assemble_baseline_feedback(
-                use_return_check=args.use_return_check,
-                pass_flag=baseline_pass,
-                exclude=args.exclude,
-                learning_result_feedback=learning_result_feedback,
-                eval_feedback=eval_feedback,
-                check_feedback=check_feedback,
-            )
+            try:
+                feedback_str, _extend_pool = assemble_baseline_feedback(
+                    use_return_check=args.use_return_check,
+                    pass_flag=baseline_pass,
+                    exclude=args.exclude,
+                    learning_result_feedback=learning_result_feedback,
+                    eval_feedback=eval_feedback,
+                    check_feedback=check_feedback,
+                )
+            except Exception as exc:
+                feedback_str += learning_result_feedback + "\n" + eval_feedback
+                print_with_color(f"feedback assembly fallback used: {exc}", "YELLOW")
             if not args.use_return_check:
-                with open(os.path.join(os.path.dirname(specific_code_path), "no check.txt"), "w") as file:
+                with open(os.path.join(os.path.dirname(specific_code_path), "no check.txt"), "w", encoding="utf-8") as file:
                     file.write("no check")
             elif baseline_pass and rl_ran:
-                with open(os.path.join(os.path.dirname(specific_code_path), "check pass.txt"), "w") as file:
+                with open(os.path.join(os.path.dirname(specific_code_path), "check pass.txt"), "w", encoding="utf-8") as file:
                     file.write("check pass")
             elif not baseline_pass:
-                with open(os.path.join(os.path.dirname(specific_code_path), "check fail.txt"), "w") as file:
+                with open(os.path.join(os.path.dirname(specific_code_path), "check fail.txt"), "w", encoding="utf-8") as file:
                     file.write("check fail" if pass_flag or rl_ran else "tpe_v2 gate fail")
-            if extend_pool and rl_ran:
+            # Always grow the offline pool after RL. Next TPE recomputes returns
+            # from obs/actions; env success/fail labels stay valid even when TPE failed.
+            if rl_ran and trajectories_for_check_need_update:
                 trajectories_for_check_list.extend(trajectories_for_check_need_update)
 
             if card_plus_cfg.any_enabled:
@@ -544,6 +574,8 @@ if __name__ == '__main__':
                     run_dir=args.log_path,
                     reward_fn=reward_function,
                     train_final_fn=_train_final,
+                    specific_code_path=specific_code_path,
+                    mutate_archive=not bool(args.checkpoint),
                 )
 
             # save data

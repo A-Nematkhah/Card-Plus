@@ -1,11 +1,10 @@
-"""Roll out a trained CrowdNav SAC policy and save a GIF."""
+"""Roll out a trained CrowdNav++ PPO/SRNN policy and save a GIF."""
 
 from __future__ import annotations
 
 import argparse
 import os
 import sys
-from types import SimpleNamespace
 
 import matplotlib
 
@@ -13,16 +12,16 @@ matplotlib.use("Agg")
 
 import imageio.v2 as imageio
 import numpy as np
-from stable_baselines3 import SAC
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from code_generation.self_reflection.crowdnav_env_utils import make_env
+from code_generation.self_reflection.crowdnav_pp_env import make_dual_view_env
+from code_generation.self_reflection.crowdnav_ppo_train import load_policy_adapter
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--model_path", type=str, required=True, help="Path to latest_model.pt")
     parser.add_argument("--task_name", type=str, default="circle-crossing-v0")
     parser.add_argument("--seed", type=int, default=1001)
     parser.add_argument("--episodes", type=int, default=1)
@@ -41,14 +40,9 @@ def main() -> None:
     if out is None:
         out = os.path.join(os.path.dirname(args.model_path), "crowdnav_winner_rollout.gif")
 
-    print(f"Loading model: {args.model_path}")
-    model = SAC.load(args.model_path)
-
-    env_args = SimpleNamespace(
-        task_name=args.task_name,
-        max_episode_steps=args.max_steps,
-        seed=args.seed,
-    )
+    print(f"Loading PPO/SRNN model: {args.model_path}")
+    model, vec = load_policy_adapter(args.model_path, task_name=args.task_name, seed=args.seed)
+    vec.close()
 
     frames = []
     successes = []
@@ -61,15 +55,15 @@ def main() -> None:
     while ep_done < args.episodes and tries < max_tries:
         tries += 1
         seeds_tried.append(seed)
-        env = make_env(
-            env_args,
+        env = make_dual_view_env(
+            args.task_name,
             seed=seed,
-            max_episode_steps=args.max_steps,
-            record_dir="logs/videos",
-            is_eval=True,
+            phase="test",
             use_ground_truth_reward=True,
             reward_code=None,
-        )()
+            max_episode_steps=args.max_steps,
+        )
+        model.reset_hidden()
         obs = env.reset()
         done = False
         step = 0
@@ -81,15 +75,20 @@ def main() -> None:
             del reward
             success = float(info.get("success", info.get("is_success", 0.0)) or 0.0)
             if step % args.every_n == 0:
-                frame = env.render(mode="rgb_array")
+                # Dual-view wraps GST env; render via unwrapped if needed.
+                render_env = env
+                while hasattr(render_env, "env") and not hasattr(render_env, "render"):
+                    render_env = render_env.env
+                frame = None
+                if hasattr(env, "env") and hasattr(env.env, "render"):
+                    try:
+                        frame = env.env.render("rgb_array")
+                    except Exception:  # noqa: BLE001
+                        frame = None
                 if frame is not None:
                     ep_frames.append(np.asarray(frame, dtype=np.uint8))
             step += 1
             if success >= 1.0:
-                for _ in range(6):
-                    frame = env.render(mode="rgb_array")
-                    if frame is not None:
-                        ep_frames.append(np.asarray(frame, dtype=np.uint8))
                 done = True
         env.close()
         print(f"try seed={seed}: steps={step}, success={success}")
@@ -101,13 +100,11 @@ def main() -> None:
         ep_done += 1
         seed += 1
 
-    if not frames:
-        raise SystemExit("No frames captured; render(mode='rgb_array') returned nothing.")
-
-    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    imageio.mimsave(out, frames, fps=args.fps, loop=0)
-    print(f"saved {len(frames)} frames -> {out}")
-    print(f"successes={successes} seeds={seeds_tried}")
+    if frames:
+        imageio.mimsave(out, frames, fps=args.fps)
+        print(f"Wrote {out} ({len(frames)} frames), successes={successes}")
+    else:
+        print("No frames captured; GIF not written.")
 
 
 if __name__ == "__main__":

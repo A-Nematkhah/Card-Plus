@@ -214,10 +214,16 @@ def collect_trajectories(model, env, mapping_dicts, trajectory_num=10, benchmark
                     else:
                         episode_data[key].append(eval(value))
             elif benchmark_name == "crowdnav":
+                # Dual-view / GST path may return Dict obs to the policy; reward
+                # features stay on the engineered flat vector in info["flat_obs"].
+                flat_obs = obs
+                if isinstance(info, dict) and info.get("flat_obs") is not None:
+                    flat_obs = info["flat_obs"]
+                    episode_data["obs"][-1] = flat_obs
                 for key, value in mapping_dicts.items():
                     if key not in episode_data.keys():
                         episode_data[key] = []
-                    episode_data[key].append(eval(value))
+                    episode_data[key].append(eval(value, {"np": np, "obs": flat_obs}))
             elif benchmark_name == "maniskill":
                 for key, value in info.items():
                     if key.startswith(INFO_PREFIX):
@@ -306,13 +312,28 @@ def convert_traj_to_str(trajectory_list: list, mapping_dicts, log_interval=100, 
         except Exception:
             last_info = {}
         solved = bool(last_info.get("success", last_info.get("is_success", False)))
+        collided = bool(last_info.get("collided", last_info.get("collision", False)))
+        timed_out = bool(
+            last_info.get("timeout", False)
+            or last_info.get("TimeLimit.truncated", False)
+        )
         end_step = int(sequence[-1]) + 1 if sequence else ep_len
         if solved:
             feedback_str += f"At step {end_step}, the agent solves the task, so the trajectory ends.\n"
-        else:
+        elif collided:
+            feedback_str += (
+                f"At step {end_step}, the agent collided and failed the task, "
+                f"so the trajectory ends.\n"
+            )
+        elif timed_out:
             feedback_str += (
                 f"At step {end_step}, the agent still has not solved the task and the maximum "
                 f"trajectory length of {end_step} is reached, so the trajectory ends.\n"
+            )
+        else:
+            feedback_str += (
+                f"At step {end_step}, the agent failed to solve the task, "
+                f"so the trajectory ends.\n"
             )
         if feedback_str[-3:] == ", \n":
             feedback_str = feedback_str[:-3] + ". \n"
@@ -333,16 +354,31 @@ def get_eval_feedback(trajectory_list: list, mapping_dicts, log_interval=100, be
             sums.append(float("-inf"))
     max_index = int(np.argmax(sums))
     min_index = int(np.argmin(sums))
-    special_trajectory_list = [trajectory_list[max_index], trajectory_list[min_index]]
-    eval_feedback = "After training, we evaluated the model and the two trajectories with the highest and lowest return are as follows:\n"
-    feedback_list = convert_traj_to_str(
-        trajectory_list=special_trajectory_list,
-        mapping_dicts=mapping_dicts,
-        log_interval=log_interval,
-        benchmark_name=benchmark_name,
-    )
-    eval_feedback += f"trajectories with the highest return {sums[max_index]:.1f} is:\n" + feedback_list[0] + "\n"
-    eval_feedback += f"trajectories with the lowest return {sums[min_index]:.1f} is:\n" + feedback_list[1]
+    if len(trajectory_list) == 1 or max_index == min_index:
+        eval_feedback = (
+            "After training, we evaluated the model. Only one distinct evaluation "
+            "trajectory was available; it is shown below:\n"
+        )
+        feedback_list = convert_traj_to_str(
+            trajectory_list=[trajectory_list[max_index]],
+            mapping_dicts=mapping_dicts,
+            log_interval=log_interval,
+            benchmark_name=benchmark_name,
+        )
+        eval_feedback += (
+            f"trajectory with return {sums[max_index]:.1f} is:\n" + feedback_list[0]
+        )
+    else:
+        special_trajectory_list = [trajectory_list[max_index], trajectory_list[min_index]]
+        eval_feedback = "After training, we evaluated the model and the two trajectories with the highest and lowest return are as follows:\n"
+        feedback_list = convert_traj_to_str(
+            trajectory_list=special_trajectory_list,
+            mapping_dicts=mapping_dicts,
+            log_interval=log_interval,
+            benchmark_name=benchmark_name,
+        )
+        eval_feedback += f"trajectories with the highest return {sums[max_index]:.1f} is:\n" + feedback_list[0] + "\n"
+        eval_feedback += f"trajectories with the lowest return {sums[min_index]:.1f} is:\n" + feedback_list[1]
     print("eval feedback is:")
     print(eval_feedback)
     return eval_feedback
@@ -422,8 +458,14 @@ def trajectories_return_check(reward_function, trajectories, mapping_dicts, thre
                         holder, traj['actions'][step], traj['obs'][step]
                     )
             elif benchmark_name == "maniskill":
-                ac = traj['actions'][step]
-                ob, result, done, info = env.step(ac)
+                # ManiSkill dense rewards typically need live env state. Reset at
+                # the start of each trajectory so trajs do not contaminate each other.
+                if env is None:
+                    raise RuntimeError("maniskill return-check requires an env for per-traj replay")
+                if step == 0:
+                    env.reset()
+                ac = traj["actions"][step]
+                _ob, result, _done, _info = env.step(ac)
             else:
                 raise RuntimeError("benchmark name error!")
             if isinstance(result, tuple):
@@ -446,11 +488,27 @@ def trajectories_return_check(reward_function, trajectories, mapping_dicts, thre
             failure_trajs["return"].append(total_reward)
             failure_trajs["reward_per_step"].append(total_reward / len(traj['obs']))
 
-    if len(failure_trajs["pos"]) == 0 or len(success_trajs["pos"]) == 0:
-        correct_count = len(success_trajs["pos"])
-        correct_rate = 1.0
-        pass_flag = correct_rate >= threshold
-        feedback = f"all success or fail! success traj num={len(success_trajs['pos'])}, fail traj num={len(failure_trajs['pos'])}"
+    n_succ = len(success_trajs["pos"])
+    n_fail = len(failure_trajs["pos"])
+    if n_succ == 0 or n_fail == 0:
+        # Vacuous cases: all-success can pass (nothing contradicts ranking);
+        # all-fail must NOT pass (there is no evidence the reward ranks success).
+        if n_succ == 0:
+            correct_count = 0
+            correct_rate = 0.0
+            pass_flag = False
+            feedback = (
+                f"all trajectories failed (success=0, fail={n_fail}); "
+                f"return check cannot pass without successful trajectories."
+            )
+        else:
+            correct_count = n_succ
+            correct_rate = 1.0
+            pass_flag = correct_rate >= threshold
+            feedback = (
+                f"all trajectories succeeded (success={n_succ}, fail=0); "
+                f"return check passes vacuously."
+            )
     else:
         failure_max_r = max(failure_trajs["reward_per_step"])
         failure_max_index = failure_trajs["reward_per_step"].index(failure_max_r)
@@ -493,7 +551,8 @@ class Logger(object):
         if os.path.exists(filename):
             os.remove(filename)
         self.terminal = sys.stdout
-        self.log = open(filename, "a")
+        # utf-8: LLM rewards / stack traces often contain non-cp1252 chars on Windows
+        self.log = open(filename, "a", encoding="utf-8", errors="replace")
         self.stderr = sys.stderr
 
     def write(self, message):

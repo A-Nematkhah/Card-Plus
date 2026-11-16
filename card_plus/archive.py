@@ -30,9 +30,10 @@ def unified_diff_line_count(a: str, b: str) -> int:
 
 
 ROLLBACK_NOTICE_TEMPLATE = """# Rollback Notice
-Your last modification reduced the success rate from {best_score:.0%} to {score:.0%}, so the reward function was reverted to version {best_idx}. Below is the diff between the best version and the failed one (best -> failed):
+Your last modification reduced the success rate from {best_score:.0%} to {score:.0%}.
+The on-disk reward for this step was restored to version {best_idx} (failed code kept as specific_*.failed.py). Below is the diff between the best version and the failed one (best -> failed):
 {unified_diff}
-Base your next version on the best version below and do NOT repeat the changes that were harmful.
+Base your next version STRICTLY on the restored best code below and do NOT repeat the changes that were harmful. Prefer a single small dense-shaping edit.
 {best_code}
 """
 
@@ -105,9 +106,13 @@ class RewardArchive:
             return None
 
         def key(v: VersionRecord) -> tuple:
+            # Prefer higher last-k success, then AUC, then mean return, then rho_full.
+            mean_ret = v.mean_return
+            mean_ret_key = float(mean_ret) if mean_ret is not None else float("-1e18")
             return (
                 float(v.version_score or 0.0),
                 float(v.curve_auc or 0.0),
+                mean_ret_key,
                 float(v.rho_full or 0.0),
             )
 
@@ -123,6 +128,21 @@ class RewardArchive:
                 return v
         return None
 
+    def best_record_excluding(
+        self, exclude_iteration: Optional[int] = None
+    ) -> Optional[VersionRecord]:
+        """Best scored version among peers, optionally excluding one iteration."""
+        others = [
+            v
+            for v in self.versions
+            if v.rl_ran
+            and v.version_score is not None
+            and (exclude_iteration is None or v.iteration != exclude_iteration)
+        ]
+        if not others:
+            return None
+        return max(others, key=self._score_key)
+
     @property
     def best_code(self) -> Optional[str]:
         rec = self.best_record()
@@ -132,42 +152,37 @@ class RewardArchive:
         rec = self.best_record()
         return rec.version_score if rec else None
 
-    def should_rollback(self, score: Optional[float]) -> bool:
-        if not self.cfg.use_archive_rollback:
-            return False
-        if score is None:
-            return False
-        best = self.best_score()
-        if best is None:
-            return False
-        # Rollback if current is worse than best by more than margin
-        # (compare against previous best excluding current — caller should add current after check,
-        #  or we compare against best among *other* versions)
-        return score < best - self.cfg.rollback_margin
+    def _score_key(self, v: VersionRecord) -> tuple:
+        mean_ret = v.mean_return
+        mean_ret_key = float(mean_ret) if mean_ret is not None else float("-1e18")
+        return (
+            float(v.version_score or 0.0),
+            float(v.curve_auc or 0.0),
+            mean_ret_key,
+            float(v.rho_full or 0.0),
+        )
+
+    def should_rollback(
+        self, score: Optional[float], exclude_iteration: Optional[int] = None
+    ) -> bool:
+        """Compare ``score`` to best among *other* versions only.
+
+        Always prefer :meth:`should_rollback_against`. If ``exclude_iteration`` is
+        omitted, excludes the highest iteration already in the archive so a
+        just-added current record cannot become its own comparison target.
+        """
+        if exclude_iteration is None and self.versions:
+            exclude_iteration = max(v.iteration for v in self.versions)
+        return self.should_rollback_against(score, exclude_iteration=exclude_iteration)
 
     def should_rollback_against(
         self, score: Optional[float], exclude_iteration: Optional[int] = None
     ) -> bool:
         if not self.cfg.use_archive_rollback or score is None:
             return False
-        others = [
-            v
-            for v in self.versions
-            if v.rl_ran
-            and v.version_score is not None
-            and (exclude_iteration is None or v.iteration != exclude_iteration)
-        ]
-        if not others:
+        best = self.best_record_excluding(exclude_iteration)
+        if best is None:
             return False
-
-        def key(v: VersionRecord) -> tuple:
-            return (
-                float(v.version_score or 0.0),
-                float(v.curve_auc or 0.0),
-                float(v.rho_full or 0.0),
-            )
-
-        best = max(others, key=key)
         return score < float(best.version_score) - self.cfg.rollback_margin
 
     def format_rollback_notice(
@@ -225,18 +240,20 @@ def extract_success_curve(learning_result: Any) -> List[float]:
             if key in learning_result and learning_result[key] is not None:
                 arr = np.asarray(learning_result[key], dtype=np.float64)
                 if arr.ndim == 2:
-                    return [float(np.mean(row)) for row in arr]
+                    # NaN-pad allowed when mid-eval and final-eval episode counts differ.
+                    return [float(np.nanmean(row)) for row in arr]
                 return [float(x) for x in arr.ravel()]
         ev = learning_result.get("evaluations")
         if isinstance(ev, dict) and "successes" in ev:
             arr = np.asarray(ev["successes"], dtype=np.float64)
             if arr.ndim == 2:
-                return [float(np.mean(row)) for row in arr]
+                return [float(np.nanmean(row)) for row in arr]
             return [float(x) for x in arr.ravel()]
     return []
 
 
-def extract_mean_return(learning_result: Any) -> Optional[float]:
+def extract_mean_return(learning_result: Any, last_k: int = 3) -> Optional[float]:
+    """Best-effort mean eval return; prefers last ``last_k`` SB3 ``results`` rows."""
     if not isinstance(learning_result, dict):
         return None
     for key in ("mean_return", "mean_reward", "episode_reward"):
@@ -248,4 +265,18 @@ def extract_mean_return(learning_result: Any) -> Optional[float]:
                     return float(learning_result[key])
                 except Exception:
                     return None
+    results = learning_result.get("results")
+    if results is not None:
+        try:
+            arr = np.asarray(results, dtype=np.float64)
+            if arr.size == 0:
+                return None
+            if arr.ndim == 2:
+                per_eval = arr.mean(axis=1)
+            else:
+                per_eval = arr.ravel()
+            k = max(1, int(last_k))
+            return float(np.mean(per_eval[-k:]))
+        except Exception:
+            return None
     return None

@@ -3,8 +3,6 @@ import os
 
 import torch.nn as nn
 
-from rl.networks.envs import VecNormalize
-
 
 # Get a render function
 def get_render_func(venv):
@@ -19,6 +17,9 @@ def get_render_func(venv):
 
 
 def get_vec_normalize(venv):
+    # Lazy import: rl.networks.envs pulls OpenAI baselines, which CARD does not require.
+    from rl.networks.envs import VecNormalize
+
     if isinstance(venv, VecNormalize):
         return venv
     elif hasattr(venv, 'venv'):

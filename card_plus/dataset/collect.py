@@ -4,20 +4,21 @@ Smoke::
 
     python -m card_plus.dataset.collect --out logs/crowdnav_ds_smoke --n-cases 16
 
-Harder stratified set::
+Balanced set for dataset gate (recommended)::
 
     python -m card_plus.dataset.collect --out logs/crowdnav_ds_v1 \\
-        --pool 500 --n-cases 200 --min-near-path 2 \\
+        --pool 1000 --n-cases 80 --min-near-path 0 --min-clearance 0.35 \\
+        --selection balanced --randomization with_random \\
+        --policies go_to_goal,noisy_go_to_goal,flee,stationary,random \\
+        --random-seeds 0,1,2 --noise-std 0.3
+
+Hard-only (legacy; often too collision-heavy for the gate)::
+
+    python -m card_plus.dataset.collect --out logs/crowdnav_ds_v1 \\
+        --pool 500 --n-cases 200 --min-near-path 2 --selection hardest \\
         --randomization with_random \\
         --policies go_to_goal,noisy_go_to_goal,stationary,random \\
         --random-seeds 0,1,2 --noise-std 0.3
-
-With SAC + noisy SAC::
-
-    python -m card_plus.dataset.collect --out logs/crowdnav_ds_v1 \\
-        --pool 500 --n-cases 200 --min-near-path 2 \\
-        --policies go_to_goal,stationary,random,sac,noisy_sac \\
-        --sac-path path/to/latest_model.zip --noise-std 0.3
 """
 
 from __future__ import annotations
@@ -78,6 +79,11 @@ def _expand_policy_jobs(
                         {"seed": int(seed), "noise_std": float(noise_std)},
                     )
                 )
+        elif key in ("slow_go_to_goal", "slow_goto"):
+            speed = 0.35
+            jobs.append((f"slow_goto_s{speed:g}", "slow_go_to_goal", {"speed": speed}))
+        elif key in ("flee", "flee_human", "flee_nearest_human"):
+            jobs.append(("flee", "flee", {}))
         elif key in ("sac", "sb3_sac"):
             if not sac_path:
                 raise SystemExit("--sac-path is required when using policy 'sac'")
@@ -119,11 +125,17 @@ def collect(
     randomization: str = "no_random",
     min_near_path: float = 0.0,
     max_clearance: Optional[float] = None,
+    min_clearance: Optional[float] = None,
     corridor: float = 1.0,
     allow_soft_fill: bool = False,
+    selection: str = "hardest",
 ) -> dict:
     out_dir = Path(out_dir)
     episodes_dir = out_dir / "episodes"
+    if episodes_dir.exists():
+        for old in episodes_dir.glob("*"):
+            if old.is_file():
+                old.unlink()
     episodes_dir.mkdir(parents=True, exist_ok=True)
 
     env_config: Dict[str, Any] = {"randomization": str(randomization)}
@@ -132,7 +144,8 @@ def collect(
     print(
         f"[collect] scanning pool={pool_n} keep={n_cases} seed={this_seed} "
         f"offset={case_offset} randomization={randomization} "
-        f"min_near_path={min_near_path} max_clearance={max_clearance}"
+        f"min_near_path={min_near_path} min_clearance={min_clearance} "
+        f"max_clearance={max_clearance} selection={selection}"
     )
     t0 = time.time()
     specs = build_stratified_manifest(
@@ -140,17 +153,21 @@ def collect(
         pool=pool_n,
         min_near_path=float(min_near_path),
         max_clearance=max_clearance,
+        min_clearance=min_clearance,
         this_seed=int(this_seed),
         case_offset=int(case_offset),
         env_config=env_config,
         corridor=float(corridor),
         allow_soft_fill=bool(allow_soft_fill),
+        selection=str(selection),
     )
     save_manifest(specs, out_dir / "manifest.json")
     summary = summarize_manifest(specs)
     summary["pool_scanned"] = pool_n
     summary["min_near_path"] = float(min_near_path)
+    summary["min_clearance"] = min_clearance
     summary["max_clearance"] = max_clearance
+    summary["selection"] = str(selection)
     summary["randomization"] = str(randomization)
     (out_dir / "manifest_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
@@ -210,12 +227,14 @@ def collect(
         "noise_std": float(noise_std),
         "randomization": str(randomization),
         "min_near_path": float(min_near_path),
+        "min_clearance": min_clearance,
         "max_clearance": max_clearance,
+        "selection": str(selection),
         "n_episodes": len(index),
         "seconds": round(time.time() - t0, 2),
     }
     (out_dir / "collect_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    print(f"[collect] wrote {len(index)} episodes → {out_dir}")
+    print(f"[collect] wrote {len(index)} episodes -> {out_dir}")
     return meta
 
 
@@ -256,6 +275,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="Optional: keep only min_clearance_to_path <= this (meters)",
     )
     p.add_argument(
+        "--min-clearance",
+        type=float,
+        default=None,
+        help="Optional: keep only min_clearance_to_path >= this (skip path-intersect death traps)",
+    )
+    p.add_argument(
+        "--selection",
+        type=str,
+        default="hardest",
+        choices=("hardest", "spread", "balanced"),
+        help="hardest|spread|balanced (balanced≈50/30/20 easy/med/hard for gate)",
+    )
+    p.add_argument(
         "--allow-soft-fill",
         action="store_true",
         default=False,
@@ -266,7 +298,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--policies",
         type=str,
         default="go_to_goal,stationary,random",
-        help="Comma-separated: go_to_goal,noisy_go_to_goal,stationary,random,sac,noisy_sac",
+        help="Comma-separated: go_to_goal,noisy_go_to_goal,flee,stationary,random,sac,noisy_sac",
     )
     p.add_argument("--sac-path", type=str, default=None, help="SB3 SAC .zip")
     p.add_argument("--max-steps", type=int, default=None, help="Cap horizon (default: env max)")
@@ -306,8 +338,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         randomization=str(args.randomization),
         min_near_path=float(args.min_near_path),
         max_clearance=None if args.max_clearance is None else float(args.max_clearance),
+        min_clearance=None if args.min_clearance is None else float(args.min_clearance),
         corridor=float(args.corridor),
         allow_soft_fill=bool(args.allow_soft_fill),
+        selection=str(args.selection),
     )
     return 0
 

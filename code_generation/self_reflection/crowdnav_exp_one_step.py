@@ -3,20 +3,20 @@ import glob
 import json
 import os
 import pickle
+import shutil
 import sys
 import traceback
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Tuple
 
-import gym
 import numpy as np
 import torch
-import wandb
-from stable_baselines3 import SAC
-from stable_baselines3.common.callbacks import EvalCallback
-from stable_baselines3.common.logger import configure
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor
-from wandb.integration.sb3 import WandbCallback
+
+try:
+    import wandb
+except ImportError:  # optional; only needed with --use_wandb
+    wandb = None
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -33,6 +33,7 @@ from card_plus.config import add_card_plus_arguments, card_plus_from_args
 from card_plus.dataset.gate import (
     add_dataset_gate_arguments,
     dataset_gate_from_args,
+    load_dataset_gate_result_json,
     run_dataset_gate,
     should_skip_rl_for_dataset_gate,
 )
@@ -44,7 +45,6 @@ from card_plus.hooks import (
 from card_plus.tpe_v2 import should_skip_rl_for_tpe_v2
 from code_generation.self_reflection.utils import (
     Logger,
-    SubRewardLog,
     collect_trajectories,
     convert_function_external,
     get_eval_feedback,
@@ -111,14 +111,19 @@ def train_and_eval(
     resume_model_path: str = None,
     train_steps: int = None,
 ):
-    """Train (or continue) SAC and collect eval trajectories.
+    """Train CrowdNav++ PPO/SRNN+GST (EvoNav stack) and collect eval trajectories.
 
-    ``load_model=True``: load existing model under this seed dir and skip training
-    (CARD checkpoint reload).
+    ``load_model=True``: reload ``latest_model.pt`` under this seed dir and skip training.
 
-    ``resume_model_path``: load that zip and train for ``train_steps`` (or
-    ``args.train_max_steps``) with ``reset_num_timesteps=False``.
+    ``resume_model_path``: continue from that ``.pt`` for ``train_steps`` (or
+    ``args.train_max_steps``) additional environment steps.
     """
+    from code_generation.self_reflection.crowdnav_pp_env import make_dual_view_env
+    from code_generation.self_reflection.crowdnav_ppo_train import (
+        load_policy_adapter,
+        train_ppo,
+    )
+
     log_path_root = os.path.join(os.path.dirname(specific_code_path), f"seed_{seed}")
     os.makedirs(log_path_root, exist_ok=True)
     if not use_ground_truth_reward:
@@ -129,6 +134,8 @@ def train_and_eval(
         raise ValueError(f"Unknown CrowdNav task: {args.task_name}")
 
     if args.use_wandb:
+        if wandb is None:
+            raise ImportError("wandb is not installed; pip install wandb or drop --use_wandb")
         run = wandb.init(
             project=args.benchmark_name,
             entity=args.entity,
@@ -141,176 +148,93 @@ def train_and_eval(
             save_code=True,
         )
         if specific_code_path is not None and glob.glob(os.path.join(os.path.dirname(specific_code_path), "*.py")):
-            os.makedirs(f"{wandb.run.dir}/reward_codes/{run.id}", exist_ok=True)
-            os.system(f"cp -r {os.path.dirname(specific_code_path)}/*.py {wandb.run.dir}/reward_codes/{run.id}")
+            dest = Path(wandb.run.dir) / "reward_codes" / run.id
+            dest.mkdir(parents=True, exist_ok=True)
+            for src in Path(specific_code_path).parent.glob("*.py"):
+                shutil.copy2(src, dest / src.name)
 
-    # DummyVecEnv is serial (no FPS gain with more envs). SubprocVecEnv parallelizes ORCA.
-    # Keep eval on Dummy to avoid doubling torch-worker RAM on Windows.
-    vec_choice = str(getattr(args, "vec_env", "auto")).lower()
-    if vec_choice == "auto":
-        TrainVecCls = SubprocVecEnv if args.train_num > 1 else DummyVecEnv
-    elif vec_choice == "subproc":
-        TrainVecCls = SubprocVecEnv
-    else:
-        TrainVecCls = DummyVecEnv
-    EvalVecCls = DummyVecEnv
-    print(
-        f"Using train={TrainVecCls.__name__}(n={args.train_num}) "
-        f"eval={EvalVecCls.__name__}(n={args.eval_num})"
-    )
-
-    reward_code = None if use_ground_truth_reward else specific_code
-    eval_env = EvalVecCls([
-        make_env(
-            args,
-            seed=seed,
-            record_dir="logs/videos",
-            is_eval=True,
-            use_ground_truth_reward=use_ground_truth_reward,
-            reward_code=reward_code,
-        )
-        for _ in range(args.eval_num)
-    ])
-    eval_env = VecMonitor(eval_env)
-    eval_env.seed(seed)
-    eval_env.reset()
-
-    extra_eval_env = make_env(
-        args,
-        seed=seed,
-        record_dir="logs/videos",
-        is_eval=True,
-        use_ground_truth_reward=use_ground_truth_reward,
-        reward_code=reward_code,
-    )()
-    extra_eval_env.seed(seed)
-    extra_eval_env.reset()
-
-    env = TrainVecCls([
-        make_env(
-            args,
-            seed=seed,
-            max_episode_steps=args.max_episode_steps,
-            is_eval=False,
-            use_ground_truth_reward=use_ground_truth_reward,
-            reward_code=reward_code,
-        )
-        for _ in range(args.train_num)
-    ])
-    env = VecMonitor(env)
-    env.seed(seed)
-    env.reset()
-
-    eval_log_path = os.path.join(log_path_root, "tensorboard_log/eval")
-    os.makedirs(eval_log_path, exist_ok=True)
-    step_eval_freq = max(1, args.eval_freq // args.train_num)
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path=eval_log_path,
-        log_path=eval_log_path,
-        eval_freq=step_eval_freq,
-        deterministic=True,
-        render=False,
-        n_eval_episodes=args.n_eval_episodes,
-    )
-    log_file_name = "extra_info.npz"
-    # SubRewardLog is single-env serial; run less often so it does not dominate wall FPS.
-    sub_eval_mult = max(1, int(getattr(args, "sub_reward_eval_mult", 2)))
-    extra_info_callback = SubRewardLog(
-        eval_env=extra_eval_env,
-        eval_freq=step_eval_freq * sub_eval_mult,
-        log_path=eval_log_path,
-        log_file_name=log_file_name,
-        n_eval_episodes=args.n_eval_episodes,
-        verbose=1,
-    )
     using_cuda = torch.cuda.is_available()
     set_seed_everywhere(seed, using_cuda)
-    # Env stepping is CPU-bound (ORCA); keep torch from oversubscribing cores.
     torch.set_num_threads(max(1, int(getattr(args, "torch_threads", 1))))
 
     train_log_path = os.path.join(log_path_root, "tensorboard_log")
     os.makedirs(train_log_path, exist_ok=True)
-    callback_list = [eval_callback, extra_info_callback]
-    if args.use_wandb:
-        callback_list.append(WandbCallback(verbose=2))
+    eval_log_path = os.path.join(train_log_path, "eval")
+    os.makedirs(eval_log_path, exist_ok=True)
+    reward_code = None if use_ground_truth_reward else specific_code
+    ckpt_path = os.path.join(train_log_path, "latest_model.pt")
+
+    print_with_color(
+        "CrowdNav train backend: PPO + selfAttn_merge_srnn + GST (CrowdSimPredRealGST-v0)",
+        "BLUE",
+    )
 
     if load_model and not resume_model_path:
-        # CARD step checkpoint: reload finished policy, do not train again.
-        resume_path = os.path.join(train_log_path, "latest_model.zip")
-        model = SAC.load(resume_path, env=env)
-    elif resume_model_path:
-        print_with_color(
-            f"Continuing SAC from {resume_model_path} for +{steps_budget} steps",
-            "BLUE",
-        )
-        model = SAC.load(resume_model_path, env=env)
-        model.set_logger(configure(train_log_path, ["stdout", "csv", "tensorboard"]))
-        try:
-            model.learn(
-                total_timesteps=steps_budget,
-                callback=callback_list,
-                reset_num_timesteps=False,
-            )
-        finally:
-            model.save(os.path.join(train_log_path, "latest_model"))
+        if not os.path.isfile(ckpt_path):
+            raise FileNotFoundError(f"Missing CrowdNav PPO checkpoint: {ckpt_path}")
+        model, traj_vec = load_policy_adapter(ckpt_path, task_name=args.task_name, seed=seed)
+        learning_result = {}
+        npz_path = os.path.join(eval_log_path, "evaluations.npz")
+        if os.path.isfile(npz_path):
+            loaded = np.load(npz_path)
+            learning_result = {key: loaded[key] for key in loaded.files}
+        traj_vec.close()
     else:
-        policy_kwargs = dict(net_arch=[256, 256])
-        model = SAC(
-            "MlpPolicy",
-            env,
-            policy_kwargs=policy_kwargs,
-            verbose=1,
-            batch_size=256,
-            gamma=0.99,
-            learning_rate=0.0003,
-            tau=0.005,
-            learning_starts=1000,
-            ent_coef="auto_0.1",
+        resume = resume_model_path
+        if resume and resume.endswith(".zip"):
+            print_with_color(
+                f"Ignoring legacy SAC zip resume ({resume}); training PPO from scratch/checkpoint .pt only",
+                "YELLOW",
+            )
+            resume = None
+        if resume is None and load_model is False and os.path.isfile(ckpt_path) and resume_model_path:
+            resume = ckpt_path
+        model, learning_result, ckpt_path = train_ppo(
+            task_name=args.task_name,
             seed=seed,
+            total_steps=steps_budget,
+            use_ground_truth_reward=use_ground_truth_reward,
+            reward_code=reward_code,
+            save_dir=train_log_path,
+            resume_path=resume,
+            # Mid-train eval for SH curves; end-of-short final eval (default 100 eps).
+            eval_freq_steps=int(getattr(args, "eval_freq", 20_000)),
+            n_eval_episodes=int(getattr(args, "n_eval_episodes", 10)),
+            final_eval_episodes=int(getattr(args, "final_eval_episodes", 100)),
+            max_episode_steps=int(getattr(args, "max_episode_steps", 200)),
         )
-        model.set_logger(configure(train_log_path, ["stdout", "csv", "tensorboard"]))
-        try:
-            model.learn(steps_budget, callback=callback_list)
-        finally:
-            # Persist the policy even if a logging callback crashes after the last step.
-            model.save(os.path.join(train_log_path, "latest_model"))
+        # Mirror evaluations.npz into eval/ for CARD feedback helpers.
+        np.savez(os.path.join(eval_log_path, "evaluations.npz"), **learning_result)
 
-    learning_result = np.load(os.path.join(eval_log_path, "evaluations.npz"))
-    learning_result = {key: learning_result[key] for key in learning_result.files}
-    extra_info_path = os.path.join(eval_log_path, log_file_name)
-    if os.path.isfile(extra_info_path):
-        extra_info = np.load(extra_info_path)
-        learning_result.update({key: extra_info[key] for key in extra_info.files})
-
-    check_traj_env = make_env(
-        args,
+    # Trajectory collection on dual-view env (Dict for policy; flat features in info).
+    check_traj_env = make_dual_view_env(
+        args.task_name,
         seed=seed,
-        record_dir="logs/videos",
-        is_eval=True,
+        phase="test",
         use_ground_truth_reward=use_ground_truth_reward,
         reward_code=reward_code,
-    )()
-    check_traj_env.seed(seed)
-    check_traj_env.reset()
-    diff_len_env = make_env(
-        args,
-        seed=seed,
-        record_dir="logs/videos",
-        is_eval=True,
+        max_episode_steps=int(getattr(args, "max_episode_steps", 200)),
+    )
+    diff_len_env = make_dual_view_env(
+        args.task_name,
+        seed=seed + 17,
+        phase="test",
         use_ground_truth_reward=use_ground_truth_reward,
         reward_code=reward_code,
-    )()
-    diff_len_env.seed(seed)
-    diff_len_env.reset()
+        max_episode_steps=int(getattr(args, "max_episode_steps", 200)),
+    )
+    model.reset_hidden()
     trajectories_for_check = collect_trajectories(
         model=model, env=check_traj_env, mapping_dicts=mapping_dicts,
         trajectory_num=args.trajectory_num, benchmark_name=args.benchmark_name,
     )
+    model.reset_hidden()
     diff_len_trajectories = collect_trajectories(
         model=model, env=diff_len_env, mapping_dicts=mapping_dicts,
         trajectory_num=args.n_eval_episodes, benchmark_name=args.benchmark_name,
     )
+    check_traj_env.close()
+    diff_len_env.close()
     if args.use_wandb:
         run.finish()
         wandb.finish()
@@ -346,7 +270,12 @@ if __name__ == "__main__":
     parser.add_argument("--torch_threads", type=int, default=1)
     parser.add_argument("--sub_reward_eval_mult", type=int, default=2,
                         help="Run SubRewardLog every N eval periods (higher => higher train FPS)")
-    parser.add_argument("--eval_freq", type=int, default=5_000)
+    parser.add_argument(
+        "--eval_freq",
+        type=int,
+        default=20_000,
+        help="Mid-train eval period in env steps (SH curves); 0 disables mid-train evals",
+    )
     parser.add_argument("--max_episode_steps", type=int, default=200)
     parser.add_argument("--train_max_steps", type=int, default=150_000)
     parser.add_argument("--seed", type=int, default=1)
@@ -356,6 +285,12 @@ if __name__ == "__main__":
     parser.add_argument("--trajectory_num", type=int, default=40)
     parser.add_argument("--train_seed_num", type=int, default=1)
     parser.add_argument("--n_eval_episodes", type=int, default=10)
+    parser.add_argument(
+        "--final_eval_episodes",
+        type=int,
+        default=100,
+        help="Episodes for end-of-short / end-of-train evaluation only",
+    )
     parser.add_argument("--use_return_check", action="store_true")
     parser.add_argument("--threshold", type=float, default=0.8)
     parser.add_argument("--log_interval", type=int, default=10)
@@ -365,7 +300,12 @@ if __name__ == "__main__":
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--step", type=int)
     parser.add_argument("--exclude", type=str, default=None)
-    parser.add_argument("--query_restart", type=bool, default=True)
+    parser.add_argument(
+        "--query_restart",
+        type=lambda x: str(x).strip().lower() in ("1", "true", "yes", "y"),
+        default=True,
+        help="Unused legacy flag (kept for CLI compatibility). Prefer True/False strings.",
+    )
     add_card_plus_arguments(parser)
     add_dataset_gate_arguments(parser)
     args = parser.parse_args()
@@ -438,12 +378,31 @@ if __name__ == "__main__":
             else:
                 if dataset_gate_cfg.enabled:
                     try:
-                        dataset_gate_result = run_dataset_gate(
-                            dataset_gate_cfg,
-                            reward_code=specific_code,
-                            run_dir=args.log_path,
-                            step=args.step,
-                        )
+                        # Multi-candidate query already gated this reward at step-1;
+                        # reuse that report instead of rescored twice on the same dataset.
+                        reused = None
+                        n_cand = int(getattr(args, "llm_candidates", 0) or 0)
+                        if n_cand >= 1 and int(args.step) >= 1:
+                            prev_gate = os.path.join(
+                                args.log_path, f"dataset_gate_{int(args.step) - 1}.json"
+                            )
+                            reused = load_dataset_gate_result_json(
+                                prev_gate, mode=dataset_gate_cfg.dataset_mode
+                            )
+                            if reused is not None:
+                                dataset_gate_result = reused
+                                print_with_color(
+                                    f"dataset gate: reusing query-time report {prev_gate} "
+                                    f"(keep={reused.keep}, composite={reused.composite:.4f})",
+                                    "BLUE",
+                                )
+                        if reused is None:
+                            dataset_gate_result = run_dataset_gate(
+                                dataset_gate_cfg,
+                                reward_code=specific_code,
+                                run_dir=args.log_path,
+                                step=args.step,
+                            )
                     except Exception as exc:
                         print_with_color(f"dataset gate failed (continuing without it): {exc}", "YELLOW")
                         dataset_gate_result = None
@@ -568,7 +527,7 @@ if __name__ == "__main__":
                     eval_feedback = f"trajectory feedback unavailable: {exc}\n"
                     print_with_color(eval_feedback, "YELLOW")
             try:
-                feedback_str, extend_pool = assemble_baseline_feedback(
+                feedback_str, _extend_pool = assemble_baseline_feedback(
                     use_return_check=args.use_return_check,
                     pass_flag=effective_pass,
                     exclude=args.exclude,
@@ -590,7 +549,9 @@ if __name__ == "__main__":
                         fail_msg = "tpe_v2 gate fail"
                     with open(os.path.join(os.path.dirname(specific_code_path), "check fail.txt"), "w") as file:
                         file.write(fail_msg)
-                if extend_pool and rl_ran:
+                # Always grow the offline pool after RL. Next TPE recomputes returns
+                # from obs/actions; env success/fail labels stay valid even when TPE failed.
+                if rl_ran and trajectories_for_check_need_update:
                     trajectories_for_check_list.extend(trajectories_for_check_need_update)
             except Exception as exc:
                 feedback_str += learning_result_feedback + "\n" + eval_feedback
@@ -645,6 +606,8 @@ if __name__ == "__main__":
                     run_dir=args.log_path,
                     reward_fn=reward_function,
                     train_final_fn=_train_final,
+                    specific_code_path=specific_code_path,
+                    mutate_archive=not bool(args.checkpoint),
                 )
 
             query_file_path = os.path.join(args.log_path, f"{RL_QUERY}_{args.step}.pkl")

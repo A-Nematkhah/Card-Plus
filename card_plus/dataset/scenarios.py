@@ -52,7 +52,7 @@ def difficulty_descriptors(
     *,
     corridor: float = 1.0,
 ) -> Dict[str, float]:
-    """Geometry-based hardness proxies (density is fixed at human_num=20).
+    """Geometry-based hardness proxies (EvoNav/CARD default human_num=20).
 
     ``humans_near_path``: humans whose clearance to the start→goal segment is
     below ``corridor`` (meters). Better stratification key than raw human_num
@@ -212,36 +212,146 @@ def _difficulty_sort_key(spec: ScenarioSpec) -> tuple:
     )
 
 
+def _passes_difficulty(
+    s: ScenarioSpec,
+    *,
+    min_near_path: float = 0.0,
+    max_clearance: Optional[float] = None,
+    min_clearance: Optional[float] = None,
+) -> bool:
+    near = float(s.difficulty.get("humans_near_path", 0.0))
+    if near < float(min_near_path):
+        return False
+    clearance = float(s.difficulty.get("min_clearance_to_path", 15.0))
+    if max_clearance is not None and clearance > float(max_clearance):
+        return False
+    # Reject straight-line paths that already graze/intersect humans (go_to_goal death traps).
+    if min_clearance is not None and clearance < float(min_clearance):
+        return False
+    return True
+
+
+def _spread_indices(n_pool: int, keep: int) -> List[int]:
+    """Evenly spaced unique indices over ``[0, n_pool)`` (hard→easy when pool is hard-sorted)."""
+    if keep <= 0 or n_pool <= 0:
+        return []
+    if keep >= n_pool:
+        return list(range(n_pool))
+    raw = np.linspace(0, n_pool - 1, num=keep)
+    idxs: List[int] = []
+    seen = set()
+    for x in raw:
+        i = int(round(float(x)))
+        i = max(0, min(n_pool - 1, i))
+        if i in seen:
+            # nudge to nearest free slot
+            for delta in range(1, n_pool):
+                for cand in (i - delta, i + delta):
+                    if 0 <= cand < n_pool and cand not in seen:
+                        i = cand
+                        break
+                else:
+                    continue
+                break
+        if i not in seen:
+            seen.add(i)
+            idxs.append(i)
+        if len(idxs) >= keep:
+            break
+    return sorted(idxs)
+
+
+def _bucket_name(spec: ScenarioSpec) -> str:
+    """easy / medium / hard from path crowding + clearance."""
+    near = float(spec.difficulty.get("humans_near_path", 0.0))
+    clearance = float(spec.difficulty.get("min_clearance_to_path", 15.0))
+    if near <= 1.0 and clearance >= 0.5:
+        return "easy"
+    if near >= 2.0 or clearance < 0.25:
+        return "hard"
+    return "medium"
+
+
 def select_hard_scenarios(
     specs: Sequence[ScenarioSpec],
     keep: int,
     *,
     min_near_path: float = 0.0,
     max_clearance: Optional[float] = None,
+    min_clearance: Optional[float] = None,
     allow_soft_fill: bool = False,
+    selection: str = "hardest",
 ) -> List[ScenarioSpec]:
-    """Keep up to ``keep`` hardest scenarios that pass difficulty filters.
+    """Keep up to ``keep`` scenarios that pass difficulty filters.
 
-    By default soft scenarios that fail ``min_near_path`` / ``max_clearance``
-    are **not** used as fillers (strict gate). Set ``allow_soft_fill=True`` to
-    pad with the hardest remaining pool members if too few pass.
+    ``selection``:
+      - ``hardest``: top-k hardest (legacy)
+      - ``spread``: evenly sample hard→easy among filter passers
+      - ``balanced``: quota mix easy/medium/hard (best for dataset-gate S/C/T)
+
+    By default soft scenarios that fail filters are **not** used as fillers.
+    Set ``allow_soft_fill=True`` to pad with the hardest remaining pool members.
     """
     keep = int(keep)
     if keep <= 0:
         return []
     pool = list(specs)
+    sel = str(selection or "hardest").strip().lower()
+    if sel not in ("hardest", "spread", "balanced"):
+        raise ValueError(
+            f"selection must be 'hardest', 'spread', or 'balanced', got {selection!r}"
+        )
 
-    def _pass(s: ScenarioSpec) -> bool:
-        near = float(s.difficulty.get("humans_near_path", 0.0))
-        if near < float(min_near_path):
-            return False
-        if max_clearance is not None:
-            if float(s.difficulty.get("min_clearance_to_path", 15.0)) > float(max_clearance):
-                return False
-        return True
-
-    preferred = sorted([s for s in pool if _pass(s)], key=_difficulty_sort_key)
+    preferred = sorted(
+        [
+            s
+            for s in pool
+            if _passes_difficulty(
+                s,
+                min_near_path=min_near_path,
+                max_clearance=max_clearance,
+                min_clearance=min_clearance,
+            )
+        ],
+        key=_difficulty_sort_key,
+    )
     if len(preferred) >= keep:
+        if sel == "spread":
+            return [preferred[i] for i in _spread_indices(len(preferred), keep)]
+        if sel == "balanced":
+            # ~50% easy / 30% medium / 20% hard for usable S/C/T gate support.
+            n_easy = max(1, int(round(keep * 0.50)))
+            n_hard = max(1, int(round(keep * 0.20)))
+            n_med = max(0, keep - n_easy - n_hard)
+            quotas = {"easy": n_easy, "medium": n_med, "hard": n_hard}
+            buckets = {"easy": [], "medium": [], "hard": []}
+            for s in preferred:
+                buckets[_bucket_name(s)].append(s)
+            # easy: prefer clearer paths (reverse hard sort within easy)
+            buckets["easy"] = sorted(
+                buckets["easy"],
+                key=lambda s: (
+                    float(s.difficulty.get("humans_near_path", 0.0)),
+                    -float(s.difficulty.get("min_clearance_to_path", 0.0)),
+                    int(s.test_case),
+                ),
+            )
+            picked: List[ScenarioSpec] = []
+            picked_ids = set()
+            for name in ("easy", "medium", "hard"):
+                take = quotas[name]
+                for s in buckets[name][:take]:
+                    picked.append(s)
+                    picked_ids.add(s.scenario_id)
+            if len(picked) < keep:
+                for s in preferred:
+                    if s.scenario_id in picked_ids:
+                        continue
+                    picked.append(s)
+                    picked_ids.add(s.scenario_id)
+                    if len(picked) >= keep:
+                        break
+            return picked[:keep]
         return preferred[:keep]
     if not allow_soft_fill:
         return preferred
@@ -260,6 +370,7 @@ def build_stratified_manifest(
     pool: Optional[int] = None,
     min_near_path: float = 0.0,
     max_clearance: Optional[float] = None,
+    min_clearance: Optional[float] = None,
     task_name: str = DEFAULT_TASK,
     this_seed: int = DEFAULT_THIS_SEED,
     phase: str = DEFAULT_PHASE,
@@ -267,12 +378,15 @@ def build_stratified_manifest(
     corridor: float = 1.0,
     case_offset: int = 0,
     allow_soft_fill: bool = False,
+    selection: str = "hardest",
 ) -> List[ScenarioSpec]:
-    """Scan ``pool`` test cases, keep ``keep`` hardest under difficulty filters.
+    """Scan ``pool`` test cases, keep ``keep`` under difficulty filters.
 
-    ``pool`` defaults to ``keep`` (no oversample). Use e.g. pool=500, keep=200,
-    min_near_path=2 for a harder held-out set. Soft fill is off by default so
-    ``min_near_path`` is actually enforced.
+    Recommended balanced set::
+
+        pool=1000, keep=80, min_near_path=1, min_clearance=0.2, selection='spread'
+
+    Soft fill is off by default so filters are actually enforced.
     """
     keep = int(keep)
     pool_n = int(pool) if pool is not None else keep
@@ -292,12 +406,15 @@ def build_stratified_manifest(
         keep,
         min_near_path=min_near_path,
         max_clearance=max_clearance,
+        min_clearance=min_clearance,
         allow_soft_fill=allow_soft_fill,
+        selection=selection,
     )
     if len(selected) < keep and not allow_soft_fill:
         print(
             f"[scenarios] strict filter kept {len(selected)}/{keep} "
-            f"(min_near_path={min_near_path}, max_clearance={max_clearance}); "
+            f"(min_near_path={min_near_path}, min_clearance={min_clearance}, "
+            f"max_clearance={max_clearance}, selection={selection}); "
             f"increase --pool or lower the threshold"
         )
     return selected

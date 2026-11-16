@@ -58,7 +58,7 @@ def test_evaluate_keep_uses_offline_rank_floor_not_calibrated_min():
     )
     assert keep is False
     assert 0.75 <= score < 0.90
-    assert any("composite=" in r for r in reasons)
+    assert any("offline_rank=" in r for r in reasons)
 
 
 def test_custom_harder_timeout_collided_floor():

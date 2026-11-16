@@ -125,14 +125,24 @@ def add_dataset_gate_arguments(parser: Any) -> None:
 
 
 def dataset_gate_from_args(args: Any) -> DatasetGateConfig:
+    # Fallbacks must match DatasetGateThresholds / argparse defaults (not softer).
+    defaults = DatasetGateThresholds()
     th = DatasetGateThresholds(
-        min_success_collided=float(getattr(args, "dataset_min_success_collided", 0.85)),
-        min_success_timeout=float(getattr(args, "dataset_min_success_timeout", 0.80)),
-        min_timeout_collided=float(getattr(args, "dataset_min_timeout_collided", 0.60)),
-        min_progress_auc=float(getattr(args, "dataset_min_progress_auc", 0.75)),
-        min_composite=float(getattr(args, "dataset_min_composite", 0.65)),
-        min_anti_hack=float(getattr(args, "dataset_min_anti_hack", 0.55)),
-        min_separation=float(getattr(args, "dataset_min_separation", 0.55)),
+        min_success_collided=float(
+            getattr(args, "dataset_min_success_collided", defaults.min_success_collided)
+        ),
+        min_success_timeout=float(
+            getattr(args, "dataset_min_success_timeout", defaults.min_success_timeout)
+        ),
+        min_timeout_collided=float(
+            getattr(args, "dataset_min_timeout_collided", defaults.min_timeout_collided)
+        ),
+        min_progress_auc=float(
+            getattr(args, "dataset_min_progress_auc", defaults.min_progress_auc)
+        ),
+        min_composite=float(getattr(args, "dataset_min_composite", defaults.min_composite)),
+        min_anti_hack=float(getattr(args, "dataset_min_anti_hack", defaults.min_anti_hack)),
+        min_separation=float(getattr(args, "dataset_min_separation", defaults.min_separation)),
     )
     return DatasetGateConfig(
         use_dataset_rescore=bool(getattr(args, "use_dataset_rescore", False)),
@@ -228,7 +238,9 @@ def evaluate_pair_floors(
     reasons: List[str] = []
 
     def _check(name: str, value: float, minimum: float) -> None:
+        # Missing outcome pairs (NaN) must fail the floor — do not silently skip.
         if value != value:
+            reasons.append(f"{name}=nan (missing outcome pair / undefined)")
             return
         if value < minimum:
             reasons.append(f"{name}={value:.4f} < {minimum:.2f}")
@@ -236,6 +248,7 @@ def evaluate_pair_floors(
     _check("success/collided", a, th.min_success_collided)
     _check("success/timeout", b, th.min_success_timeout)
     _check("timeout/collided", c, th.min_timeout_collided)
+    # progress_auc field = outcome return AUC (success vs fail); name kept for compat.
     _check("progress_auc", d, th.min_progress_auc)
 
     metrics = {
@@ -274,7 +287,8 @@ def evaluate_keep(
     th = th or DatasetGateThresholds()
     floor = float(th.min_offline_rank)
     if rank < floor:
-        reasons = list(reasons) + [f"composite={rank:.4f} < {floor:.2f}"]
+        # Legacy key name in metrics remains "composite" (== offline_rank here).
+        reasons = list(reasons) + [f"offline_rank={rank:.4f} < {floor:.2f}"]
         ok = False
     return ok, reasons, rank, metrics
 
@@ -414,3 +428,60 @@ def run_dataset_gate(
 
 def should_skip_rl_for_dataset_gate(result: Optional[DatasetGateResult]) -> bool:
     return bool(result is not None and result.skip_rl)
+
+
+def load_dataset_gate_result_json(
+    path: PathLike,
+    *,
+    mode: Optional[str] = None,
+) -> Optional[DatasetGateResult]:
+    """Reload a previously written ``dataset_gate_*.json`` (skip duplicate rescore)."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Could not load dataset gate json %s: %s", p, exc)
+        return None
+    report_data = data.get("report") or {}
+    pairs_raw = report_data.get("pair_accuracies") or []
+    pair_accuracies = [
+        PairAccuracy(
+            pair=str(pa.get("pair", "")),
+            n_pairs=int(pa.get("n_pairs", 0) or 0),
+            accuracy=float(pa["accuracy"])
+            if pa.get("accuracy") is not None
+            else float("nan"),
+        )
+        for pa in pairs_raw
+        if isinstance(pa, dict)
+    ]
+    report = RescoreReport(
+        n_episodes=int(report_data.get("n_episodes", 0) or 0),
+        mean_return=float(report_data.get("mean_return", 0.0) or 0.0),
+        outcome_counts=dict(report_data.get("outcome_counts") or {}),
+        progress_auc=float(report_data["progress_auc"])
+        if report_data.get("progress_auc") is not None
+        else float("nan"),
+        tpe_v1_rate=(
+            None
+            if report_data.get("tpe_v1_rate") is None
+            else float(report_data["tpe_v1_rate"])
+        ),
+        pair_accuracies=pair_accuracies,
+        extras=dict(report_data.get("extras") or {}),
+    )
+    mode_s = str(mode or data.get("mode") or "gate")
+    keep = bool(data.get("keep", False))
+    skip_rl = bool(data.get("skip_rl", mode_s == "gate" and not keep))
+    metrics = {str(k): float(v) if v is not None else float("nan") for k, v in (data.get("metrics") or {}).items()}
+    return DatasetGateResult(
+        keep=keep,
+        skip_rl=skip_rl,
+        mode=mode_s,
+        composite=float(data.get("composite", 0.0) or 0.0),
+        reasons=[str(r) for r in (data.get("reasons") or [])],
+        report=report,
+        metrics=metrics,
+    )

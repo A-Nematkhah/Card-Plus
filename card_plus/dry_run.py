@@ -129,7 +129,7 @@ def run_dry_loop(
             tpe_v2=tpe_v2,
             rl_skipped=skip,
         )
-        record, rolled_back, notice = update_archive_after_version(
+        record, rolled_back, notice, _restored = update_archive_after_version(
             archive,
             cfg,
             iteration=it,

@@ -203,3 +203,31 @@ def test_gate_mode_skips_rl_when_hacked():
     assert should_skip_rl_for_tpe_v2(cfg, hacked) is True
     cfg_warn = CardPlusConfig(use_tpe_v2=True, tpe_v2_mode="warn")
     assert should_skip_rl_for_tpe_v2(cfg_warn, hacked) is False
+
+
+def test_both_rhos_weak_not_hacked():
+    """Distance-penalty style: v1 can pass while both rhos are weak → not hacked."""
+    from card_plus.tpe_v2 import is_dense_shaping_hacked
+
+    cfg = CardPlusConfig(use_tpe_v2=True, tpe_v2_tau_dense=0.3, tpe_v2_sparse_gap=0.2)
+    assert (
+        is_dense_shaping_hacked(
+            pass_v1=True,
+            rho_full=-0.38,
+            rho_dense=-0.20,
+            sparse_keys=["success_reward", "collision_reward"],
+            cfg=cfg,
+        )
+        is False
+    )
+    # Sparse clearly carries ordering: full high, dense low, gap large → hacked
+    assert (
+        is_dense_shaping_hacked(
+            pass_v1=True,
+            rho_full=0.85,
+            rho_dense=-0.10,
+            sparse_keys=["success_reward"],
+            cfg=cfg,
+        )
+        is True
+    )
