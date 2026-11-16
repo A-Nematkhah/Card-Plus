@@ -1,12 +1,14 @@
 """Offline dataset gate: keep only rewards that separate outcomes well.
 
 Composite (calibrated)::
-  composite = 0.25*offline_rank + 0.35*separation + 0.40*anti_hack
+  composite = 0.10*offline_rank + 0.30*separation + 0.30*anti_hack
+              + 0.30*intra_scenario
 
 where
-  offline_rank  = old weighted pair accuracies + progress_auc (often ~0.95–1)
-  separation    = soft mean-gap between outcome returns (Cohen-like)
-  anti_hack     = soft margins progress/success vs flee & orbit probes
+  offline_rank    = pair accuracies + progress_auc (often ~0.95–1; low weight)
+  separation      = steep soft mean-gap between outcome returns
+  anti_hack       = soft margins progress/success vs flee & orbit probes
+  intra_scenario  = within-scenario Spearman(rule ranks, reward ranks)
 
 Keep also requires pair floors, static anti-farm rules, and hard anti_hack probes.
 
@@ -50,10 +52,12 @@ class DatasetGateThresholds:
     min_success_timeout: float = 0.80
     min_timeout_collided: float = 0.60
     min_progress_auc: float = 0.75
-    min_composite: float = 0.65  # calibrated composite (rank+sep+anti_hack)
+    # Calibrated for discriminative composite (low rank weight + intra/sep/hack).
+    # Empirically: farm≈0.53, weak-but-passing LLM≈0.74, strong≈0.79–0.80.
+    min_composite: float = 0.75
     min_offline_rank: float = 0.75  # legacy pair/AUC floor (evaluate_keep / diagnostics)
-    min_anti_hack: float = 0.55
-    min_separation: float = 0.55
+    min_anti_hack: float = 0.65
+    min_separation: float = 0.70
     w_success_collided: float = 0.35
     w_success_timeout: float = 0.25
     w_timeout_collided: float = 0.25
@@ -101,15 +105,15 @@ def add_dataset_gate_arguments(parser: Any) -> None:
     g.add_argument(
         "--dataset_min_composite",
         type=float,
-        default=0.65,
-        help="Min calibrated composite (rank+separation+anti_hack)",
+        default=0.75,
+        help="Min calibrated composite (rank+sep+anti_hack+intra)",
     )
-    g.add_argument("--dataset_min_anti_hack", type=float, default=0.55)
-    g.add_argument("--dataset_min_separation", type=float, default=0.55)
+    g.add_argument("--dataset_min_anti_hack", type=float, default=0.65)
+    g.add_argument("--dataset_min_separation", type=float, default=0.70)
     g.add_argument(
         "--llm_candidates",
         type=int,
-        default=3,
+        default=5,
         help="When dataset gate is on: generate this many passing rewards, then train the best",
     )
     g.add_argument(
@@ -173,7 +177,8 @@ class DatasetGateResult:
             f"  composite={self.composite:.4f} "
             f"(rank={self.metrics.get('offline_rank', float('nan')):.4f} "
             f"sep={self.metrics.get('separation', float('nan')):.4f} "
-            f"anti_hack={self.metrics.get('anti_hack', float('nan')):.4f})",
+            f"anti_hack={self.metrics.get('anti_hack', float('nan')):.4f} "
+            f"intra={self.metrics.get('intra_scenario', float('nan')):.4f})",
             f"  success/collided={self.metrics.get('success/collided', float('nan')):.4f}",
             f"  success/timeout={self.metrics.get('success/timeout', float('nan')):.4f}",
             f"  timeout/collided={self.metrics.get('timeout/collided', float('nan')):.4f}",
@@ -400,7 +405,8 @@ def run_dataset_gate(
         f"[dataset_gate] keep={keep} skip_rl={skip_rl} composite={composite:.4f} "
         f"(rank={metrics.get('offline_rank', float('nan')):.4f} "
         f"sep={metrics.get('separation', float('nan')):.4f} "
-        f"anti_hack={metrics.get('anti_hack', float('nan')):.4f}) "
+        f"anti_hack={metrics.get('anti_hack', float('nan')):.4f} "
+        f"intra={metrics.get('intra_scenario', float('nan')):.4f}) "
         f"reasons={reasons or '-'}"
     )
     return result

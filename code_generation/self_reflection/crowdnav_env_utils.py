@@ -37,13 +37,13 @@ CROWDNAV_TASKS = {
     "circle-crossing-v0": {
         "instruction": (
             "Navigate a holonomic robot from a random start to a random goal through a circle-crossing crowd "
-            "(CrowdNav++ / EvoNav setting: 5 pedestrians on a ~12×12 m workspace). "
+            "(CrowdNav++ / EvoNav setting: 10 pedestrians on a ~12×12 m workspace). "
             "Reach the goal without colliding with any pedestrian. Keep a comfortable clearance; do not freeze in place "
             "or take a long detour when a shorter safe path exists. "
             "Humans are ORCA-controlled and react to the robot. "
             "The task is finished successfully when the robot arrives within its own radius of the goal without any collision."
         ),
-        "human_num": 5,
+        "human_num": 10,
         "circle_radius": EVONAV_CIRCLE_RADIUS,
         "arena_size": EVONAV_ARENA_SIZE,
         "time_limit": 50.0,
@@ -413,9 +413,17 @@ class CrowdNavEnv(gym.Env):
             )
         self._fig.canvas.draw()
         if mode == "rgb_array":
-            width, height = self._fig.canvas.get_width_height()
-            buf = np.frombuffer(self._fig.canvas.tostring_rgb(), dtype=np.uint8)
-            return buf.reshape(height, width, 3)
+            # Matplotlib Agg: tostring_rgb removed; prefer RGBA buffer then drop alpha.
+            canvas = self._fig.canvas
+            width, height = canvas.get_width_height()
+            if hasattr(canvas, "buffer_rgba"):
+                buf = np.asarray(canvas.buffer_rgba(), dtype=np.uint8)
+                return np.ascontiguousarray(buf[:, :, :3])
+            if hasattr(canvas, "tostring_rgb"):
+                buf = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
+                return buf.reshape(height, width, 3)
+            argb = np.frombuffer(canvas.tostring_argb(), dtype=np.uint8).reshape(height, width, 4)
+            return np.ascontiguousarray(argb[:, :, [1, 2, 3]])
         return None
 
     def close(self):

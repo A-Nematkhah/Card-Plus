@@ -20,10 +20,14 @@ def test_anti_hack_farm_lower_than_good_reward():
 
 def test_calibrated_composite_penalizes_high_rank_low_hack():
     # Pairwise-perfect offline rank but weak anti-hack → not near 1.0
-    c = calibrated_composite(offline_rank=0.99, separation=0.90, anti_hack=0.40)
+    c = calibrated_composite(
+        offline_rank=0.99, separation=0.90, anti_hack=0.40, intra_scenario=0.50
+    )
     assert c < 0.85
-    assert c > 0.5
+    assert c > 0.45
     # Strong on all axes → higher
-    c2 = calibrated_composite(offline_rank=0.99, separation=0.85, anti_hack=0.85)
+    c2 = calibrated_composite(
+        offline_rank=0.99, separation=0.85, anti_hack=0.85, intra_scenario=0.90
+    )
     assert c2 > c
-    assert c2 > 0.85
+    assert c2 > 0.80

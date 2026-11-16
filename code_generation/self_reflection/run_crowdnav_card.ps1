@@ -1,14 +1,21 @@
-﻿# CARD loop for CrowdNav++ circle-crossing-v0:
-# step0 -> query0 -> step1 (train) -> query1 -> ... -> query(N-1) -> stepN (train)
-# TrainRounds = number of SAC train stages (default 5 => ends at step5).
+﻿# CARD loop for CrowdNav++ circle-crossing-v0 (compute-lean defaults):
+# - Short screen ~100k x TrainRounds (rank by peak when scores are flat)
+# - Top-K finalists CONTINUE from short checkpoint up to FinalistSteps
+# - Cheap train eval (10 eps / 10k freq); held-out 50-eps eval only at the end
+# - Each query: LLM candidates -> gate -> ONLY best composite is trained
 param(
     [string]$ResumeLogPath = "",
     [int]$StartStep = 0,
     [int]$TrainRounds = 5,
-    [int]$TrainMaxSteps = 100000,
-    [int]$EvalFreq = 5000,
+    [int]$TrainMaxSteps = 150000,
+    [int]$FinalistSteps = 550000,
+    [int]$FinalistTopK = 2,
+    [switch]$NoFinalists,
+    [int]$EvalFreq = 10000,
     [int]$TrainNum = 4,
     [int]$EvalNum = 4,
+    [int]$NEvalEpisodes = 10,
+    [int]$LlmCandidates = 5,
     [ValidateSet("auto","dummy","subproc")]
     [string]$VecEnv = "auto",
     [switch]$Smoke,
@@ -40,6 +47,7 @@ if (-not $env:XAI_KEYS_PATH) {
 
 if ($Smoke) {
     $TrainMaxSteps = 2000
+    $FinalistSteps = 4000
     $EvalFreq = 1000
 }
 
@@ -64,9 +72,9 @@ $common = @(
     "--eval_num", "$EvalNum",
     "--vec_env", "$VecEnv",
     "--torch_threads", "1",
-    "--sub_reward_eval_mult", "2",
+    "--sub_reward_eval_mult", "4",
     "--train_seed_num", "1",
-    "--n_eval_episodes", "10",
+    "--n_eval_episodes", "$NEvalEpisodes",
     "--trajectory_num", "20",
     "--log_interval", "10",
     "--use_return_check",
@@ -96,18 +104,23 @@ if (-not $NoDatasetRescore) {
             "--dataset_min_success_timeout", "0.80",
             "--dataset_min_timeout_collided", "0.60",
             "--dataset_min_progress_auc", "0.75",
-            "--dataset_min_composite", "0.65",
-            "--dataset_min_anti_hack", "0.55",
-            "--dataset_min_separation", "0.55",
-            "--llm_candidates", "3",
-            "--llm_candidate_retries", "5"
+            "--dataset_min_composite", "0.75",
+            "--dataset_min_anti_hack", "0.65",
+            "--dataset_min_separation", "0.70",
+            "--llm_candidates", "$LlmCandidates",
+            "--llm_candidate_retries", "4"
         )
-        Write-Host "Dataset gate ON ($DatasetMode): $DatasetPath (LLM 3 candidates, pick best)"
+        Write-Host "Dataset gate ON ($DatasetMode): $DatasetPath (LLM $LlmCandidates candidates -> best composite out)"
     } else {
         Write-Host "WARNING: dataset not found at $DatasetPath — gate disabled"
     }
 }
 Write-Host "TrainNum=$TrainNum EvalNum=$EvalNum VecEnv=$VecEnv CardPlus=$CardPlus"
+$continueSteps = [Math]::Max(0, $FinalistSteps - $TrainMaxSteps)
+$approxShort = $TrainRounds * $TrainMaxSteps
+$approxFinal = $FinalistTopK * $continueSteps
+Write-Host "LEAN budget: short=${TrainRounds}x${TrainMaxSteps}=$approxShort; finalists=${FinalistTopK}x+${continueSteps}=$approxFinal; total_RL≈$($approxShort+$approxFinal)"
+Write-Host "eval_freq=$EvalFreq n_eval=$NEvalEpisodes llm_cand=$LlmCandidates (held-out 50eps at end; NoFinalists=$NoFinalists)"
 
 function Invoke-Card([string[]]$arguments, [string]$name) {
     Write-Host ""
@@ -141,7 +154,7 @@ Write-Host "LOG_PATH=$runLogPath"
 Set-Content -LiteralPath (Join-Path $here "last_crowdnav_logpath.txt") -Value $runLogPath
 
 # For train round k=1..TrainRounds:
-#   query(k-1) generates code_(k-1), then step k trains it.
+#   query(k-1) generates code_(k-1), then step k trains it (short budget).
 # Resume: StartStep=1 skips query0 and reruns step1 (matches drawer-open).
 for ($k = 1; $k -le $TrainRounds; $k++) {
     $queryStep = $k - 1
@@ -164,6 +177,43 @@ for ($k = 1; $k -le $TrainRounds; $k++) {
             Write-Host "Found $ckpt -> loading with --checkpoint (skip train)"
         }
         Invoke-Card $stepArgs "step$k"
+    }
+}
+
+# Across-step SH: top-K short-trained versions get a long final train.
+if (-not $NoFinalists) {
+    if (-not $CardPlus) {
+        Write-Host "WARNING: finalists need -CardPlus archive; skipping finalist phase"
+    } else {
+        $finReport = Join-Path $runLogPath "finalists\report.json"
+        if (Test-Path -LiteralPath $finReport) {
+            Write-Host "Found $finReport -> skip finalists"
+        } else {
+            $finArgs = @(
+                "crowdnav_finalists.py",
+                "--log_path", "$runLogPath",
+                "--top_k", "$FinalistTopK",
+                "--train_max_steps", "$FinalistSteps",
+                "--short_train_steps", "$TrainMaxSteps",
+                "--final_eval_seed", "1001",
+                "--final_eval_episodes", "50",
+                "--eval_freq", "$EvalFreq",
+                "--train_num", "$TrainNum",
+                "--eval_num", "$EvalNum",
+                "--vec_env", "$VecEnv",
+                "--torch_threads", "1",
+                "--sub_reward_eval_mult", "2",
+                "--max_episode_steps", "200",
+                "--n_eval_episodes", "$NEvalEpisodes",
+                "--trajectory_num", "20",
+                "--task_name", "circle-crossing-v0",
+                "--benchmark_name", "crowdnav",
+                "--llm_model_name", "grok-4.3",
+                "--exp_name", "card",
+                "--seed", "1"
+            )
+            Invoke-Card $finArgs "finalists_${FinalistTopK}x${FinalistSteps}"
+        }
     }
 }
 

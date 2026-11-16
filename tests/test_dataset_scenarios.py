@@ -44,7 +44,8 @@ def test_capture_scenario_deterministic():
     ha = np.stack([h.as_array() for h in a.initial_humans])
     hb = np.stack([h.as_array() for h in b.initial_humans])
     assert np.allclose(ha, hb)
-    assert a.human_num == 20
+    assert a.human_num == len(a.initial_humans)
+    assert a.human_num >= 5
 
 
 def test_different_cases_differ():
@@ -92,9 +93,14 @@ def test_select_hard_scenarios_prefers_near_path():
     assert [s.test_case for s in picked] == [1, 2]
 
 
-def test_select_hard_fills_when_filter_too_strict():
+def test_select_hard_strict_does_not_soft_fill():
     pool = [_fake_spec(i, near=0, clearance=float(i)) for i in range(5)]
     picked = select_hard_scenarios(pool, keep=3, min_near_path=9.0)
+    assert picked == []
+
+
+def test_select_hard_soft_fill_when_enabled():
+    pool = [_fake_spec(i, near=0, clearance=float(i)) for i in range(5)]
+    picked = select_hard_scenarios(pool, keep=3, min_near_path=9.0, allow_soft_fill=True)
     assert len(picked) == 3
-    # hardest-first among fillers: lowest clearance
     assert picked[0].test_case == 0

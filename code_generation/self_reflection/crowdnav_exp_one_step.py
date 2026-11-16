@@ -99,11 +99,31 @@ def env_is_valid(reward_code_str, args):
     return True, ""
 
 
-def train_and_eval(args, seed, step, use_ground_truth_reward: bool, specific_code, specific_code_path: str, load_model):
+def train_and_eval(
+    args,
+    seed,
+    step,
+    use_ground_truth_reward: bool,
+    specific_code,
+    specific_code_path: str,
+    load_model,
+    *,
+    resume_model_path: str = None,
+    train_steps: int = None,
+):
+    """Train (or continue) SAC and collect eval trajectories.
+
+    ``load_model=True``: load existing model under this seed dir and skip training
+    (CARD checkpoint reload).
+
+    ``resume_model_path``: load that zip and train for ``train_steps`` (or
+    ``args.train_max_steps``) with ``reset_num_timesteps=False``.
+    """
     log_path_root = os.path.join(os.path.dirname(specific_code_path), f"seed_{seed}")
     os.makedirs(log_path_root, exist_ok=True)
     if not use_ground_truth_reward:
         load_reward_function(code=specific_code)
+    steps_budget = int(args.train_max_steps if train_steps is None else train_steps)
 
     if args.task_name not in CROWDNAV_TASKS:
         raise ValueError(f"Unknown CrowdNav task: {args.task_name}")
@@ -209,9 +229,31 @@ def train_and_eval(args, seed, step, use_ground_truth_reward: bool, specific_cod
     # Env stepping is CPU-bound (ORCA); keep torch from oversubscribing cores.
     torch.set_num_threads(max(1, int(getattr(args, "torch_threads", 1))))
 
-    if load_model:
-        resume_path = os.path.join(log_path_root, "tensorboard_log", "latest_model.zip")
+    train_log_path = os.path.join(log_path_root, "tensorboard_log")
+    os.makedirs(train_log_path, exist_ok=True)
+    callback_list = [eval_callback, extra_info_callback]
+    if args.use_wandb:
+        callback_list.append(WandbCallback(verbose=2))
+
+    if load_model and not resume_model_path:
+        # CARD step checkpoint: reload finished policy, do not train again.
+        resume_path = os.path.join(train_log_path, "latest_model.zip")
         model = SAC.load(resume_path, env=env)
+    elif resume_model_path:
+        print_with_color(
+            f"Continuing SAC from {resume_model_path} for +{steps_budget} steps",
+            "BLUE",
+        )
+        model = SAC.load(resume_model_path, env=env)
+        model.set_logger(configure(train_log_path, ["stdout", "csv", "tensorboard"]))
+        try:
+            model.learn(
+                total_timesteps=steps_budget,
+                callback=callback_list,
+                reset_num_timesteps=False,
+            )
+        finally:
+            model.save(os.path.join(train_log_path, "latest_model"))
     else:
         policy_kwargs = dict(net_arch=[256, 256])
         model = SAC(
@@ -227,14 +269,9 @@ def train_and_eval(args, seed, step, use_ground_truth_reward: bool, specific_cod
             ent_coef="auto_0.1",
             seed=seed,
         )
-        train_log_path = os.path.join(log_path_root, "tensorboard_log")
-        os.makedirs(train_log_path, exist_ok=True)
         model.set_logger(configure(train_log_path, ["stdout", "csv", "tensorboard"]))
-        callback_list = [eval_callback, extra_info_callback]
-        if args.use_wandb:
-            callback_list.append(WandbCallback(verbose=2))
         try:
-            model.learn(args.train_max_steps, callback=callback_list)
+            model.learn(steps_budget, callback=callback_list)
         finally:
             # Persist the policy even if a logging callback crashes after the last step.
             model.save(os.path.join(train_log_path, "latest_model"))
@@ -311,7 +348,7 @@ if __name__ == "__main__":
                         help="Run SubRewardLog every N eval periods (higher => higher train FPS)")
     parser.add_argument("--eval_freq", type=int, default=5_000)
     parser.add_argument("--max_episode_steps", type=int, default=200)
-    parser.add_argument("--train_max_steps", type=int, default=100_000)
+    parser.add_argument("--train_max_steps", type=int, default=150_000)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--benchmark_name", type=str, default="crowdnav")
     parser.add_argument("--max_try_num", type=int, default=10)

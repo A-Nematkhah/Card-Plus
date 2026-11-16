@@ -77,7 +77,7 @@ def select_best_reward_candidates(
     map_dict: dict,
     step: int,
     gate_cfg: DatasetGateConfig,
-    n_candidates: int = 3,
+    n_candidates: int = 5,
     max_retries_per_slot: int = 5,
     run_dir: Optional[str] = None,
 ) -> CandidateSelectionResult:
@@ -191,6 +191,29 @@ def select_best_reward_candidates(
     code_generator.message_history = list(base_history) + [winner.response]
     code_generator.save_code(winner.general_code, winner.specific_code, step)
 
+    # Persist every accepted candidate so successive halving can train them.
+    if run_dir is not None:
+        cand_root = Path(run_dir) / f"code_{step}" / "candidates"
+        cand_root.mkdir(parents=True, exist_ok=True)
+        for r in accepted:
+            slot_dir = cand_root / f"cand_{r.slot}"
+            slot_dir.mkdir(parents=True, exist_ok=True)
+            (slot_dir / "specific.py").write_text(
+                r.specific_code, encoding="utf-8", newline="\n"
+            )
+            (slot_dir / "general.py").write_text(
+                r.general_code, encoding="utf-8", newline="\n"
+            )
+            meta = {
+                "slot": r.slot,
+                "attempt": r.attempt,
+                "composite": r.composite,
+                "metrics": r.gate.metrics if r.gate else {},
+            }
+            (slot_dir / "meta.json").write_text(
+                json.dumps(_json_safe(meta), indent=2), encoding="utf-8"
+            )
+
     # Canonical gate report for this step = winner.
     run_dataset_gate(
         gate_cfg,
@@ -211,6 +234,7 @@ def select_best_reward_candidates(
                 "attempt": winner.attempt,
                 "composite": winner.composite,
                 "metrics": winner.gate.metrics if winner.gate else {},
+                "selection": "composite",
             },
             "accepted": [
                 {
@@ -218,6 +242,7 @@ def select_best_reward_candidates(
                     "attempt": r.attempt,
                     "composite": r.composite,
                     "metrics": r.gate.metrics if r.gate else {},
+                    "code_dir": str(Path(run_dir) / f"code_{step}" / "candidates" / f"cand_{r.slot}"),
                 }
                 for r in accepted
             ],

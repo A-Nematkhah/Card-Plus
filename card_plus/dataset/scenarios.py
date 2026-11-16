@@ -218,11 +218,13 @@ def select_hard_scenarios(
     *,
     min_near_path: float = 0.0,
     max_clearance: Optional[float] = None,
+    allow_soft_fill: bool = False,
 ) -> List[ScenarioSpec]:
-    """Keep up to ``keep`` hardest scenarios passing difficulty filters.
+    """Keep up to ``keep`` hardest scenarios that pass difficulty filters.
 
-    If filters leave fewer than ``keep``, fill from the remaining pool (still
-    hardest-first) so collection does not abort on sparse hard cases.
+    By default soft scenarios that fail ``min_near_path`` / ``max_clearance``
+    are **not** used as fillers (strict gate). Set ``allow_soft_fill=True`` to
+    pad with the hardest remaining pool members if too few pass.
     """
     keep = int(keep)
     if keep <= 0:
@@ -241,6 +243,8 @@ def select_hard_scenarios(
     preferred = sorted([s for s in pool if _pass(s)], key=_difficulty_sort_key)
     if len(preferred) >= keep:
         return preferred[:keep]
+    if not allow_soft_fill:
+        return preferred
     preferred_ids = {s.scenario_id for s in preferred}
     filler = sorted(
         [s for s in pool if s.scenario_id not in preferred_ids],
@@ -262,11 +266,13 @@ def build_stratified_manifest(
     env_config: Optional[Dict[str, Any]] = None,
     corridor: float = 1.0,
     case_offset: int = 0,
+    allow_soft_fill: bool = False,
 ) -> List[ScenarioSpec]:
     """Scan ``pool`` test cases, keep ``keep`` hardest under difficulty filters.
 
     ``pool`` defaults to ``keep`` (no oversample). Use e.g. pool=500, keep=200,
-    min_near_path=2 for a harder held-out set.
+    min_near_path=2 for a harder held-out set. Soft fill is off by default so
+    ``min_near_path`` is actually enforced.
     """
     keep = int(keep)
     pool_n = int(pool) if pool is not None else keep
@@ -281,12 +287,20 @@ def build_stratified_manifest(
         corridor=corridor,
         case_offset=case_offset,
     )
-    return select_hard_scenarios(
+    selected = select_hard_scenarios(
         scanned,
         keep,
         min_near_path=min_near_path,
         max_clearance=max_clearance,
+        allow_soft_fill=allow_soft_fill,
     )
+    if len(selected) < keep and not allow_soft_fill:
+        print(
+            f"[scenarios] strict filter kept {len(selected)}/{keep} "
+            f"(min_near_path={min_near_path}, max_clearance={max_clearance}); "
+            f"increase --pool or lower the threshold"
+        )
+    return selected
 
 
 def save_manifest(specs: Sequence[ScenarioSpec], path: PathLike) -> Path:

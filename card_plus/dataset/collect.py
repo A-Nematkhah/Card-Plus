@@ -120,6 +120,7 @@ def collect(
     min_near_path: float = 0.0,
     max_clearance: Optional[float] = None,
     corridor: float = 1.0,
+    allow_soft_fill: bool = False,
 ) -> dict:
     out_dir = Path(out_dir)
     episodes_dir = out_dir / "episodes"
@@ -143,6 +144,7 @@ def collect(
         case_offset=int(case_offset),
         env_config=env_config,
         corridor=float(corridor),
+        allow_soft_fill=bool(allow_soft_fill),
     )
     save_manifest(specs, out_dir / "manifest.json")
     summary = summarize_manifest(specs)
@@ -245,13 +247,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--min-near-path",
         type=float,
         default=0.0,
-        help="Prefer scenarios with humans_near_path >= this (fill from pool if short)",
+        help="Keep only scenarios with humans_near_path >= this (strict unless --allow-soft-fill)",
     )
     p.add_argument(
         "--max-clearance",
         type=float,
         default=None,
-        help="Optional: prefer min_clearance_to_path <= this (meters)",
+        help="Optional: keep only min_clearance_to_path <= this (meters)",
+    )
+    p.add_argument(
+        "--allow-soft-fill",
+        action="store_true",
+        default=False,
+        help="If too few scenarios pass filters, pad with softer ones (legacy behavior)",
     )
     p.add_argument("--corridor", type=float, default=1.0, help="Path corridor for difficulty")
     p.add_argument(
@@ -299,6 +307,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         min_near_path=float(args.min_near_path),
         max_clearance=None if args.max_clearance is None else float(args.max_clearance),
         corridor=float(args.corridor),
+        allow_soft_fill=bool(args.allow_soft_fill),
     )
     return 0
 

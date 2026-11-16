@@ -64,7 +64,7 @@ def main():
         )
 
     gate_cfg = dataset_gate_from_args(rl_args)
-    n_candidates = int(getattr(rl_args, "llm_candidates", 3))
+    n_candidates = int(getattr(rl_args, "llm_candidates", 5))
     max_retries = int(getattr(rl_args, "llm_candidate_retries", 5))
 
     if gate_cfg.enabled and n_candidates >= 1:
