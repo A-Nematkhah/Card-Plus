@@ -14,7 +14,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -66,33 +66,39 @@ def select_top_versions(
 
 
 def short_checkpoint_path(log_path: Path, iteration: int, seed: int) -> Optional[Path]:
-    """CARD step ``iteration`` trains ``code_{iteration-1}``."""
+    """CARD step ``iteration`` trains ``code_{iteration-1}``.
+
+    PPO/GST checkpoints are ``.pt`` only. Legacy SAC ``.zip`` files are ignored
+    so callers do not silently "resume" into a cold start.
+    """
     code_step = int(iteration) - 1
     if code_step < 0:
         return None
-    for name in ("latest_model.pt", "latest_model.zip", "latest_model"):
-        p = (
-            log_path
-            / f"code_{code_step}"
-            / f"seed_{seed}"
-            / "tensorboard_log"
-            / name
-        )
-        if p.is_file() or p.with_suffix(".zip").is_file() or p.with_suffix(".pt").is_file():
-            if p.is_file():
-                return p
-            if p.with_suffix(".pt").is_file():
-                return p.with_suffix(".pt")
-            return p.with_suffix(".zip")
-    best = (
-        log_path
-        / f"code_{code_step}"
-        / f"seed_{seed}"
-        / "tensorboard_log"
-        / "eval"
-        / "best_model.zip"
-    )
-    return best if best.is_file() else None
+    tb = log_path / f"code_{code_step}" / f"seed_{seed}" / "tensorboard_log"
+    for rel in (
+        Path("latest_model.pt"),
+        Path("eval") / "best_model.pt",
+    ):
+        p = tb / rel
+        if p.is_file():
+            return p
+    return None
+
+
+def resolve_finalist_model_path(code_dir: Path, seed: int) -> Optional[Path]:
+    """Prefer PPO ``.pt`` artifacts written under a finalist code dir."""
+    tb = code_dir / f"seed_{seed}" / "tensorboard_log"
+    for rel in (
+        Path("eval") / "best_model.pt",
+        Path("latest_model.pt"),
+        # Legacy SAC leftovers (held-out PPO loader cannot use these).
+        Path("eval") / "best_model.zip",
+        Path("latest_model.zip"),
+    ):
+        p = tb / rel
+        if p.is_file():
+            return p
+    return None
 
 
 def held_out_eval(
@@ -267,11 +273,15 @@ def main() -> None:
             continue_curve = extract_success_curve(learning_result) or []
             resumed = False
         else:
-            # Seed finalist TB dir with short checkpoint (and eval history if present).
+            # Seed finalist TB dir with short PPO checkpoint (and eval history if present).
             tb = code_dir / f"seed_{args.seed}" / "tensorboard_log"
             eval_dir = tb / "eval"
             eval_dir.mkdir(parents=True, exist_ok=True)
-            dest_model = tb / "latest_model.zip"
+            dest_model = tb / "latest_model.pt"
+            if ckpt.suffix.lower() != ".pt":
+                raise SystemExit(
+                    f"Finalist iter={v.iteration}: expected PPO .pt checkpoint, got {ckpt}"
+                )
             shutil.copy2(ckpt, dest_model)
             short_eval = (
                 log_path
@@ -314,9 +324,15 @@ def main() -> None:
         full_curve = continue_curve if continue_curve else short_curve
         final_s = float(full_curve[-1]) if full_curve else 0.0
         peak_s = float(max(full_curve)) if full_curve else 0.0
-        latest = code_dir / f"seed_{args.seed}" / "tensorboard_log" / "latest_model.zip"
-        best_zip = code_dir / f"seed_{args.seed}" / "tensorboard_log" / "eval" / "best_model.zip"
-        model_for_eval = str(best_zip if best_zip.is_file() else latest)
+        resolved = resolve_finalist_model_path(code_dir, int(args.seed))
+        if resolved is not None and resolved.suffix.lower() == ".zip":
+            print_with_color(
+                f"Finalist iter={v.iteration}: only legacy .zip model found ({resolved.name}); "
+                "held-out PPO eval needs .pt",
+                "YELLOW",
+            )
+            resolved = None
+        model_for_eval = str(resolved) if resolved is not None else ""
 
         entry = {
             "iteration": v.iteration,
@@ -338,7 +354,7 @@ def main() -> None:
         )
         if (peak_s, final_s) > (best_peak, best_final):
             best_peak, best_final, best_iteration = peak_s, final_s, v.iteration
-            best_model_path = model_for_eval
+            best_model_path = model_for_eval or None
             best_reward_code = v.reward_code
             best_dir = log_path / "card_plus_best"
             best_dir.mkdir(parents=True, exist_ok=True)
@@ -351,11 +367,16 @@ def main() -> None:
             (best_dir / "finalist_meta.json").write_text(
                 json.dumps(_json_safe(entry), indent=2), encoding="utf-8"
             )
-            if Path(model_for_eval).is_file():
-                shutil.copy2(model_for_eval, best_dir / "best_model.zip")
+            if best_model_path and Path(best_model_path).is_file():
+                shutil.copy2(best_model_path, best_dir / "best_model.pt")
 
     final_eval = None
-    if best_model_path and best_reward_code and Path(best_model_path).is_file():
+    if (
+        best_model_path
+        and best_reward_code
+        and Path(best_model_path).is_file()
+        and Path(best_model_path).suffix.lower() == ".pt"
+    ):
         print_with_color(
             f"Held-out final eval: model={best_model_path} "
             f"seed={args.final_eval_seed} n={args.final_eval_episodes}",
@@ -392,6 +413,14 @@ def main() -> None:
     report_path = out_root / "report.json"
     report_path.write_text(json.dumps(_json_safe(report), indent=2), encoding="utf-8")
     print_with_color(f"Wrote finalists report to {report_path}", "GREEN")
+
+    try:
+        from code_generation.self_reflection.crowdnav_results import publish_crowdnav_results
+
+        published = publish_crowdnav_results(log_path)
+        print_with_color(f"Published curated results -> {published}", "GREEN")
+    except Exception as exc:  # noqa: BLE001
+        print_with_color(f"WARNING: results publish failed: {exc}", "YELLOW")
 
 
 if __name__ == "__main__":

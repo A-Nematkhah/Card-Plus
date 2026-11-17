@@ -4,13 +4,14 @@
 # - Short screen then top-K finalist continue
 # - Single-process DummyVecEnv (PPO+GST stack; TrainNum>1 does not parallelize yet)
 #
-# ~18h lean budget defaults below. Override with -TrainMaxSteps / -FinalistSteps etc.
+# H=20 GST/PPO budget (if short still weak vs H=10): 5x250k screen + 2x1.2M finalists.
+# Approx RL ~3.5M env steps. Override with -TrainMaxSteps / -FinalistSteps etc.
 param(
     [string]$ResumeLogPath = "",
     [int]$StartStep = 0,
-    [int]$TrainRounds = 3,
-    [int]$TrainMaxSteps = 150000,
-    [int]$FinalistSteps = 1000000,
+    [int]$TrainRounds = 5,
+    [int]$TrainMaxSteps = 250000,
+    [int]$FinalistSteps = 1200000,
     [int]$FinalistTopK = 2,
     [switch]$NoFinalists,
     # Mid-train eval ON (needed for SH / success curves). End-of-short also runs FinalEvalEpisodes.
@@ -34,7 +35,9 @@ param(
     [string]$DatasetPath = "",
     [switch]$EvalBest,
     # If dataset missing: fail (default) instead of silently disabling the gate.
-    [switch]$AllowMissingDataset
+    [switch]$AllowMissingDataset,
+    # After each CARD step / finalists: commit+push results/ for cross-machine resume.
+    [bool]$PushProgress = $true
 )
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -114,7 +117,7 @@ if ($CardPlus) {
 # Optimal dataset gate: keep only rewards that separate success/collision/timeout.
 if (-not $NoDatasetRescore) {
     if ($DatasetPath -eq "") {
-        $DatasetPath = Join-Path $repo "logs\crowdnav_ds_v1"
+        $DatasetPath = Join-Path $repo "results\datasets\crowdnav_ds_v1"
     }
     if (Test-Path -LiteralPath $DatasetPath) {
         $common += @(
@@ -133,7 +136,7 @@ if (-not $NoDatasetRescore) {
         )
         Write-Host "Dataset gate ON ($DatasetMode): $DatasetPath (LLM $LlmCandidates candidates -> best composite out)"
     } else {
-        $msg = "Dataset not found at $DatasetPath. Collect first: python -m card_plus.dataset.collect --out logs/crowdnav_ds_v1 ..."
+        $msg = "Dataset not found at $DatasetPath. Collect first: python -m card_plus.dataset.collect --out results/datasets/crowdnav_ds_v1 ..."
         if ($AllowMissingDataset) {
             Write-Host "WARNING: $msg — gate disabled (-AllowMissingDataset)"
         } else {
@@ -157,20 +160,36 @@ function Invoke-Card([string[]]$arguments, [string]$name) {
     }
 }
 
+function Sync-Progress([string]$message) {
+    if (-not $PushProgress) { return }
+    $syncPs1 = Join-Path $here "sync_crowdnav_progress.ps1"
+    Write-Host "---- git sync: $message ----"
+    try {
+        & $syncPs1 -Message $message -LogPath $runLogPath
+    } catch {
+        Write-Host "WARNING: progress sync failed (training continues): $_"
+    }
+}
+
 Write-Host "Starting CARD CrowdNav++ circle-crossing-v0 run"
-Write-Host "cwd=$here TrainRounds=$TrainRounds TrainMaxSteps=$TrainMaxSteps Smoke=$Smoke"
+Write-Host "cwd=$here TrainRounds=$TrainRounds TrainMaxSteps=$TrainMaxSteps Smoke=$Smoke PushProgress=$PushProgress"
 Write-Host "XAI_KEYS_PATH=$($env:XAI_KEYS_PATH)"
 Write-Host "XAI_PROXY=$($env:XAI_PROXY)"
+
+$runsRoot = Join-Path $repo "results\runs\crowdnav"
+New-Item -ItemType Directory -Force -Path $runsRoot | Out-Null
 
 if ($ResumeLogPath -ne "") {
     $runLogPath = $ResumeLogPath
     Write-Host "Resuming LOG_PATH=$runLogPath from step $StartStep"
 } else {
     $stamp = Get-Date -Format "yyyy-MM-dd-HH-mm-ss"
-    $runLogPath = Join-Path $here "logs\crowdnav\grok-4.3\t=0.7\zero-shot\PPO_GST_1\circle-crossing-v0\card\exclude=None\$stamp"
+    # Portable path: pushed under results/ so another machine can git pull + resume.
+    $runLogPath = Join-Path $runsRoot "PPO_GST_H20_$stamp"
     New-Item -ItemType Directory -Force -Path $runLogPath | Out-Null
     $StartStep = 0
     Invoke-Card (@("crowdnav_exp_one_step.py") + $common + @("--step", "0", "--log_path", $runLogPath)) "step0"
+    Sync-Progress "crowdnav card step0 init $stamp"
 }
 
 if (-not (Test-Path -LiteralPath $runLogPath)) {
@@ -178,6 +197,7 @@ if (-not (Test-Path -LiteralPath $runLogPath)) {
 }
 Write-Host "LOG_PATH=$runLogPath"
 Set-Content -LiteralPath (Join-Path $here "last_crowdnav_logpath.txt") -Value $runLogPath
+Set-Content -LiteralPath (Join-Path $runsRoot "LAST_LOGPATH.txt") -Value $runLogPath
 
 # For train round k=1..TrainRounds:
 #   query(k-1) generates code_(k-1), then step k trains it (short budget).
@@ -192,6 +212,7 @@ for ($k = 1; $k -le $TrainRounds; $k++) {
             Write-Host "Found $respPath -> skip query$queryStep"
         } else {
             Invoke-Card @("query_llm_crowdnav.py", "--rl_question_file_path", $qPath) "query$queryStep"
+            Sync-Progress "crowdnav card query$queryStep"
         }
     }
     if ($StartStep -le $k) {
@@ -199,15 +220,20 @@ for ($k = 1; $k -le $TrainRounds; $k++) {
         # If train already finished and checkpoint exists, skip re-training.
         $ckpt = Join-Path $runLogPath "checkpoint_$k.pkl"
         $modelPt = Join-Path $runLogPath "code_$($k - 1)\seed_1\tensorboard_log\latest_model.pt"
+        $skippedTrain = $false
         if (Test-Path -LiteralPath $ckpt) {
             $stepArgs += "--checkpoint"
+            $skippedTrain = $true
             Write-Host "Found $ckpt -> loading with --checkpoint (skip train)"
         } elseif (Test-Path -LiteralPath $modelPt) {
-            # Post-train crash (e.g. trajectory collect): reuse .pt, skip another 150k.
+            # Post-train crash (e.g. trajectory collect): reuse .pt, skip another long train.
             $stepArgs += "--load_model"
             Write-Host "Found $modelPt -> --load_model (skip train, finish collect/feedback)"
         }
         Invoke-Card $stepArgs "step$k"
+        if (-not $skippedTrain) {
+            Sync-Progress "crowdnav card step$k short-train"
+        }
     }
 }
 
@@ -244,6 +270,7 @@ if (-not $NoFinalists) {
                 "--seed", "1"
             )
             Invoke-Card $finArgs "finalists_${FinalistTopK}x${FinalistSteps}"
+            Sync-Progress "crowdnav card finalists done"
         }
     }
 }
@@ -259,5 +286,17 @@ if ($EvalBest) {
     ) "eval_best"
 }
 
+Sync-Progress "crowdnav card DONE"
 Write-Host "DONE $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "log: $runLogPath"
+Write-Host "Resume on another machine:"
+Write-Host "  git pull"
+Write-Host "  copy xai_key (not in git)"
+Write-Host "  .\run_crowdnav_card.ps1 -ResumeLogPath <log> -StartStep N"
+$resultsHint = Join-Path $repo "results\crowdnav"
+if (Test-Path -LiteralPath $resultsHint) {
+    $latestResult = Get-ChildItem -LiteralPath $resultsHint -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($latestResult) {
+        Write-Host "curated results: $($latestResult.FullName)"
+    }
+}

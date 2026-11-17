@@ -1,0 +1,2 @@
+Full CARD log (resume / debug):
+I:\Code\Card-plus\code_generation\self_reflection\logs\crowdnav\grok-4.3\t=0.7\zero-shot\SAC_1\circle-crossing-v0\card\exclude=None\2026-11-16-14-34-51

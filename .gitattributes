@@ -1,0 +1,6 @@
+# Large CrowdNav CARD artifacts under results/ (cross-machine resume)
+results/**/*.pt filter=lfs diff=lfs merge=lfs -text
+results/**/*.pkl filter=lfs diff=lfs merge=lfs -text
+results/**/*.zip filter=lfs diff=lfs merge=lfs -text
+results/**/*.gif filter=lfs diff=lfs merge=lfs -text
+results/**/*.npz filter=lfs diff=lfs merge=lfs -text

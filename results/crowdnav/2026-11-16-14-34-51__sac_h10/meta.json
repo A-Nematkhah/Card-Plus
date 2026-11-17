@@ -1,0 +1,31 @@
+{
+  "run_id": "2026-11-16-14-34-51__sac_h10",
+  "source_log_path": "I:\\Code\\Card-plus\\code_generation\\self_reflection\\logs\\crowdnav\\grok-4.3\\t=0.7\\zero-shot\\SAC_1\\circle-crossing-v0\\card\\exclude=None\\2026-11-16-14-34-51",
+  "stack_tag": "sac_h10",
+  "best_iteration": 5,
+  "held_out_success_rate": 0.92,
+  "held_out_n_episodes": 50,
+  "held_out_eval_seed": 1001,
+  "copied": {
+    "models": [
+      "best_model.zip",
+      "specific.py",
+      "version.txt"
+    ],
+    "eval": [
+      "final_eval.json",
+      "finalist_meta.json",
+      "finalists_report.json"
+    ],
+    "gifs": [
+      "seed_1001.gif",
+      "seed_42.gif",
+      "seed_7.gif"
+    ]
+  },
+  "layout": {
+    "models": "winner checkpoint + reward code",
+    "eval": "held-out + finalists report",
+    "gifs": "rollout visualizations"
+  }
+}

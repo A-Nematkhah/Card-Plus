@@ -170,8 +170,10 @@ code_generation/self_reflection/gifs/
 code_generation/self_reflection/*.gif
 code_generation/self_reflection/MUJOCO_LOG.TXT
 code_generation/self_reflection/last_*_logpath.txt
+# Portable CARD runs + curated exports live under results/ (pushed; large files via LFS)
 third_party/
 xai_keys.json
+xai_key
 
 code_generation/self_reflection/bench_crowdnav_fps.py
 code_generation/self_reflection/plot_crowdnav_run.py
