@@ -89,7 +89,7 @@ def add_dataset_gate_arguments(parser: Any) -> None:
         "--dataset_path",
         type=str,
         default="",
-        help="Dataset directory with index.json (e.g. logs/crowdnav_ds_v1)",
+        help="Dataset directory with index.json (e.g. results/datasets/crowdnav_ds_v1)",
     )
     g.add_argument(
         "--dataset_mode",
@@ -207,7 +207,7 @@ class DatasetGateResult:
             lines.append(
                 "  RL skipped: reward did not meet calibrated keep criteria. "
                 "Need strong outcome separation AND anti-hack margins "
-                "(delta progress, penalty-only clearance, no flee farming)."
+                "(prefer goal progress over flee/orbit probes)."
             )
         return "\n".join(lines) + "\n"
 

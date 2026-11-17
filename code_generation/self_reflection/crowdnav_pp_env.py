@@ -203,11 +203,16 @@ def make_gst_base_env(
     _ensure_crowdnav_path()
     import crowd_sim  # noqa: F401  # registers env ids
     env = gym.make("CrowdSimPredRealGST-v0")
-    env.configure(config)
-    env.thisSeed = int(seed)
-    env.nenv = int(nenv)
-    env.phase = phase
-    if hasattr(env, "seed"):
+    # gym>=0.21 wraps with OrderEnforcing; CrowdNav attrs must land on the inner sim.
+    core = env.unwrapped if hasattr(env, "unwrapped") else env
+    core.configure(config)
+    for target in (core, env):
+        target.thisSeed = int(seed)
+        target.nenv = int(nenv)
+        target.phase = phase
+    if hasattr(core, "seed"):
+        core.seed(int(seed))
+    elif hasattr(env, "seed"):
         env.seed(int(seed))
     return env
 

@@ -33,10 +33,9 @@ ALTERNATIVE_PROMPT = (
 REJECT_REWRITE_TEMPLATE = (
     "Your previous reward FAILED the offline dataset gate and is discarded.\n"
     "{gate_feedback}\n"
-    "Rewrite a NEW reward that: (1) ranks success > timeout > collision, "
-    "(2) uses delta goal-distance via self.pre_obs (not only -k*distance), "
-    "(3) uses clearance as a PENALTY ONLY when too close — never +c*obs[7], "
-    "(4) never rewards fleeing from humans. "
+    "Rewrite a NEW reward with a different structure/weighting that ranks "
+    "success trajectories above timeout and collision, encourages progress "
+    "toward the goal, and does not reward fleeing or clearance farming. "
     "Return only one Python reward function in a ```python``` block."
 )
 

@@ -1,5 +1,5 @@
 ﻿# CARD loop for CrowdNav++ / EvoNav (GST + PPO/SRNN), defaults ON:
-# - Dataset gate (logs/crowdnav_ds_v1) + LLM multi-candidate selection
+# - Dataset gate (results/datasets/crowdnav_ds_v1) + LLM multi-candidate selection
 # - CARD+ archive / TPE / SH finalists
 # - Short screen then top-K finalist continue
 # - Single-process DummyVecEnv (PPO+GST stack; TrainNum>1 does not parallelize yet)

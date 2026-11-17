@@ -230,21 +230,59 @@ def _json_default(obj: Any) -> Any:
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
+def _portable_payload(obj: Any) -> Any:
+    """Replace ndarrays with nested lists so pickles work across NumPy 1.x/2.x."""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, dict):
+        return {k: _portable_payload(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_portable_payload(v) for v in obj]
+    if isinstance(obj, (np.floating, np.integer)):
+        return obj.item()
+    return obj
+
+
+def _ensure_numpy_pickle_compat() -> None:
+    """Allow unpickling NumPy-2 array pickles on NumPy 1.x (numpy._core → numpy.core)."""
+    import sys
+
+    try:
+        import numpy.core as _np_core
+    except ImportError:
+        return
+    aliases = {
+        "numpy._core": _np_core,
+        "numpy._core.multiarray": getattr(_np_core, "multiarray", None),
+        "numpy._core.numeric": getattr(_np_core, "numeric", None),
+    }
+    try:
+        import numpy.core._multiarray_umath as _mu  # type: ignore
+
+        aliases["numpy._core._multiarray_umath"] = _mu
+    except Exception:
+        aliases["numpy._core._multiarray_umath"] = aliases.get("numpy._core.multiarray")
+    for name, mod in aliases.items():
+        if mod is not None:
+            sys.modules.setdefault(name, mod)
+
+
 def save_episode(episode: Episode, path: PathLike) -> Path:
-    """Save episode as ``.npz`` (arrays preserved) or ``.json`` (debug)."""
+    """Save episode as ``.npz`` (pickle of portable dict) or ``.json`` (debug)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = episode.to_dict()
     if path.suffix.lower() == ".json":
         path.write_text(json.dumps(payload, default=_json_default, indent=2), encoding="utf-8")
     else:
-        # default / .npz
+        # Extension kept as .npz for historical paths; payload is a pickle-safe dict
+        # (lists, not ndarrays) so NumPy 1.x and 2.x can both load it.
         if path.suffix.lower() != ".npz":
             path = path.with_suffix(".npz")
         import pickle
 
         with path.open("wb") as f:
-            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(_portable_payload(payload), f, protocol=pickle.HIGHEST_PROTOCOL)
     return path
 
 
@@ -255,6 +293,7 @@ def load_episode(path: PathLike) -> Episode:
     else:
         import pickle
 
+        _ensure_numpy_pickle_compat()
         with path.open("rb") as f:
             payload = pickle.load(f)
     ep = Episode.from_dict(payload)
