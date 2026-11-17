@@ -1,0 +1,38 @@
+{
+  "n_cases": 80,
+  "pool": 1000,
+  "case_offset": 0,
+  "this_seed": 42,
+  "policies": [
+    "go_to_goal",
+    "noisy_go_to_goal",
+    "flee",
+    "stationary",
+    "random"
+  ],
+  "policy_runs": [
+    "go_to_goal",
+    "noisy_goto_n0.3_s0",
+    "flee",
+    "stationary",
+    "random_s0",
+    "random_s1",
+    "random_s2"
+  ],
+  "random_seeds": [
+    0,
+    1,
+    2
+  ],
+  "noise_seeds": [
+    0
+  ],
+  "noise_std": 0.3,
+  "randomization": "with_random",
+  "min_near_path": 0.0,
+  "min_clearance": 0.35,
+  "max_clearance": null,
+  "selection": "balanced",
+  "n_episodes": 560,
+  "seconds": 148.47
+}
