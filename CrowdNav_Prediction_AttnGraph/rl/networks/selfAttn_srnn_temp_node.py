@@ -49,11 +49,11 @@ class SpatialEdgeSelfAttn(nn.Module):
     def create_attn_mask(self, each_seq_len, seq_len, nenv, max_human_num):
         # mask with value of False means padding and should be ignored by attention
         # why +1: use a sentinel in the end to handle the case when each_seq_len = 18
-        if self.args.no_cuda:
-            mask = torch.zeros(seq_len * nenv, max_human_num + 1).cpu()
-        else:
-            mask = torch.zeros(seq_len*nenv, max_human_num+1).cuda()
-        mask[torch.arange(seq_len*nenv), each_seq_len.long()] = 1.
+        device = each_seq_len.device if torch.is_tensor(each_seq_len) else (
+            torch.device("cpu") if self.args.no_cuda else torch.device("cuda")
+        )
+        mask = torch.zeros(seq_len * nenv, max_human_num + 1, device=device)
+        mask[torch.arange(seq_len * nenv, device=device), each_seq_len.long()] = 1.
         mask = torch.logical_not(mask.cumsum(dim=1))
         # remove the sentinel
         mask = mask[:, :-1].unsqueeze(-2) # seq_len*nenv, 1, max_human_num
@@ -132,11 +132,11 @@ class EdgeAttention_M(nn.Module):
     def create_attn_mask(self, each_seq_len, seq_len, nenv, max_human_num):
         # mask with value of False means padding and should be ignored by attention
         # why +1: use a sentinel in the end to handle the case when each_seq_len = 18
-        if self.args.no_cuda:
-            mask = torch.zeros(seq_len * nenv, max_human_num + 1).cpu()
-        else:
-            mask = torch.zeros(seq_len * nenv, max_human_num + 1).cuda()
-        mask[torch.arange(seq_len * nenv), each_seq_len.long()] = 1.
+        device = each_seq_len.device if torch.is_tensor(each_seq_len) else (
+            torch.device("cpu") if self.args.no_cuda else torch.device("cuda")
+        )
+        mask = torch.zeros(seq_len * nenv, max_human_num + 1, device=device)
+        mask[torch.arange(seq_len * nenv, device=device), each_seq_len.long()] = 1.
         mask = torch.logical_not(mask.cumsum(dim=1))
         # remove the sentinel
         mask = mask[:, :-1].unsqueeze(-2)  # seq_len*nenv, 1, max_human_num
@@ -350,10 +350,8 @@ class selfAttn_merge_SRNN(nn.Module):
 
         dummy_human_mask = [0] * self.human_num
         dummy_human_mask[0] = 1
-        if self.args.no_cuda:
-            self.dummy_human_mask = Variable(torch.Tensor([dummy_human_mask]).cpu())
-        else:
-            self.dummy_human_mask = Variable(torch.Tensor([dummy_human_mask]).cuda())
+        # Keep on CPU; move to the active device in forward() to respect CARD_DEVICE.
+        self.dummy_human_mask = Variable(torch.Tensor([dummy_human_mask]))
 
 
 
@@ -380,19 +378,27 @@ class selfAttn_merge_SRNN(nn.Module):
         else:
             human_masks = reshapeT(inputs['visible_masks'], seq_length, nenv).float() # [seq_len, nenv, max_human_num]
             # if no human is detected (human_masks are all False, set the first human to True)
-            human_masks[human_masks.sum(dim=-1)==0] = self.dummy_human_mask
+            human_masks[human_masks.sum(dim=-1)==0] = self.dummy_human_mask.to(
+                device=human_masks.device, dtype=human_masks.dtype
+            )
 
 
         hidden_states_node_RNNs = reshapeT(rnn_hxs['human_node_rnn'], 1, nenv)
         masks = reshapeT(masks, seq_length, nenv)
 
 
-        if self.args.no_cuda:
-            all_hidden_states_edge_RNNs = Variable(
-                torch.zeros(1, nenv, 1+self.human_num, rnn_hxs['human_human_edge_rnn'].size()[-1]).cpu())
-        else:
-            all_hidden_states_edge_RNNs = Variable(
-                torch.zeros(1, nenv, 1+self.human_num, rnn_hxs['human_human_edge_rnn'].size()[-1]).cuda())
+        # Allocate on the same device/dtype as incoming RNN state (respect CARD_DEVICE=cpu).
+        _edge_h = rnn_hxs['human_human_edge_rnn']
+        all_hidden_states_edge_RNNs = Variable(
+            torch.zeros(
+                1,
+                nenv,
+                1 + self.human_num,
+                _edge_h.size()[-1],
+                device=_edge_h.device,
+                dtype=_edge_h.dtype,
+            )
+        )
 
         robot_states = torch.cat((temporal_edges, robot_node), dim=-1)
         robot_states = self.robot_linear(robot_states)

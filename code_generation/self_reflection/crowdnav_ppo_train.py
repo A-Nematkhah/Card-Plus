@@ -98,8 +98,11 @@ class PolicyPredictAdapter:
         if isinstance(obs, dict):
             out = {}
             for k, v in obs.items():
-                t = v if torch.is_tensor(v) else torch.from_numpy(np.asarray(v))
-                if t.dim() == len(t.shape) and t.dim() >= 1 and t.shape[0] != 1:
+                t = v if torch.is_tensor(v) else torch.as_tensor(np.asarray(v))
+                # Dual-view gym obs can be float64/int; SRNN linears expect float32 on policy device.
+                if k != "visible_masks" and t.dtype != torch.bool:
+                    t = t.float()
+                if t.dim() >= 1 and t.shape[0] != 1:
                     # single-env dict without batch dim
                     t = t.unsqueeze(0)
                 out[k] = t.to(self.device)
@@ -108,7 +111,7 @@ class PolicyPredictAdapter:
                 if t.dim() == 2 and k in ("robot_node", "temporal_edges"):
                     out[k] = t.unsqueeze(0)
                 elif t.dim() == 1 and k == "detected_human_num":
-                    out[k] = t.view(1, 1)
+                    out[k] = t.view(1, 1).float()
                 elif t.dim() == 1 and k == "visible_masks":
                     out[k] = t.unsqueeze(0)
                 elif t.dim() == 2 and k == "spatial_edges":
@@ -138,7 +141,9 @@ class PolicyPredictAdapter:
             batch_obs, self._rnn_hxs, self._masks, deterministic=deterministic
         )
         del value, log_prob
-        act = action.squeeze(0).detach().cpu().numpy()
+        act = action.squeeze(0).detach().cpu().numpy().astype(np.float32, copy=False)
+        # Env action space is Box([-1, 1]^2); unclipped samples break DualView steps.
+        act = np.clip(act.reshape(-1), -1.0, 1.0).astype(np.float32, copy=False)
         return act, None
 
     def reset_hidden(self):
@@ -431,7 +436,12 @@ def load_policy_adapter(
         envs, config, device = make_pp_vec_env(
             task_name, seed=seed, use_ground_truth_reward=True, reward_code=None
         )
-        algo_args = default_algo_args(seed=seed, num_env_steps=1)
+        # Must match CARD_DEVICE / vec device: SRNN allocates edge RNN zeros via args.no_cuda.
+        algo_args = default_algo_args(
+            seed=seed, num_env_steps=1, device_cuda=(device.type == "cuda")
+        )
+        algo_args.cuda = device.type == "cuda"
+        algo_args.no_cuda = device.type != "cuda"
         actor_critic = Policy(
             envs.observation_space.spaces,
             envs.action_space,

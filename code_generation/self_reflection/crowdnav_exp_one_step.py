@@ -51,6 +51,7 @@ from code_generation.self_reflection.utils import (
     get_learning_result_feedback_simple,
     get_learning_result_mean,
     print_with_color,
+    sanitize_trajectories,
     set_seed_everywhere,
     trajectories_return_check,
 )
@@ -352,7 +353,9 @@ if __name__ == "__main__":
             with open(specific_code_path, "r", encoding="utf-8") as f:
                 specific_code = f.read()
             message_history = loaded_objects_dict["message_history"]
-            trajectories_for_check_list = loaded_objects_dict["trajectories_for_check_list"]
+            trajectories_for_check_list = sanitize_trajectories(
+                loaded_objects_dict["trajectories_for_check_list"]
+            )
 
             feedback_str = ""
             correct_count = 0
@@ -371,6 +374,10 @@ if __name__ == "__main__":
                     loaded_data = pickle.load(f)
                 correct_count, correct_all, correct_rate, pass_flag, check_feedback = loaded_data["return_check_info"]
                 learning_result, trajectories_for_check_need_update, diff_len_trajectories = loaded_data["train_info"]
+                trajectories_for_check_need_update = sanitize_trajectories(
+                    trajectories_for_check_need_update
+                )
+                diff_len_trajectories = sanitize_trajectories(diff_len_trajectories)
                 tpe_v2_result = loaded_data.get("tpe_v2_result")
                 rl_ran = loaded_data.get("rl_ran", learning_result is not None)
                 print("=" * 20 + f"{args.exp_name} load checkpoint successfully!" + "=" * 20)
@@ -468,6 +475,10 @@ if __name__ == "__main__":
                     )
                     rl_ran = True
                 checkpoint_file = os.path.join(args.log_path, f"{CHECKPOINT}_{args.step}.pkl")
+                trajectories_for_check_need_update = sanitize_trajectories(
+                    trajectories_for_check_need_update
+                )
+                diff_len_trajectories = sanitize_trajectories(diff_len_trajectories)
                 with open(checkpoint_file, "wb") as f:
                     pickle.dump(
                         {
@@ -611,6 +622,7 @@ if __name__ == "__main__":
                 )
 
             query_file_path = os.path.join(args.log_path, f"{RL_QUERY}_{args.step}.pkl")
+            trajectories_for_check_list = sanitize_trajectories(trajectories_for_check_list)
             with open(query_file_path, "wb") as file:
                 pickle.dump(
                     {

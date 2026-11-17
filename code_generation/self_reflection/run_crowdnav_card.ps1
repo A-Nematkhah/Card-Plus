@@ -198,9 +198,14 @@ for ($k = 1; $k -le $TrainRounds; $k++) {
         $stepArgs = @("crowdnav_exp_one_step.py") + $common + @("--step", "$k", "--log_path", $runLogPath)
         # If train already finished and checkpoint exists, skip re-training.
         $ckpt = Join-Path $runLogPath "checkpoint_$k.pkl"
+        $modelPt = Join-Path $runLogPath "code_$($k - 1)\seed_1\tensorboard_log\latest_model.pt"
         if (Test-Path -LiteralPath $ckpt) {
             $stepArgs += "--checkpoint"
             Write-Host "Found $ckpt -> loading with --checkpoint (skip train)"
+        } elseif (Test-Path -LiteralPath $modelPt) {
+            # Post-train crash (e.g. trajectory collect): reuse .pt, skip another 150k.
+            $stepArgs += "--load_model"
+            Write-Host "Found $modelPt -> --load_model (skip train, finish collect/feedback)"
         }
         Invoke-Card $stepArgs "step$k"
     }

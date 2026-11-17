@@ -189,22 +189,89 @@ def get_learning_result_feedback_simple(learning_result: dict, log_point_num):
     return learning_result_feedback
 
 
+def _jsonable_scalar(value):
+    """Convert CrowdNav/gym info values into pickle-safe Python/numpy scalars."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (np.bool_, np.integer)):
+        return value.item()
+    if isinstance(value, np.floating):
+        return float(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    # crowd_sim.envs.utils.info.* event objects (Nothing/Collision/Timeout/...)
+    mod = getattr(type(value), "__module__", "") or ""
+    if mod.startswith("crowd_sim"):
+        out = {"_crowd_sim_event": type(value).__name__, "label": str(value)}
+        if hasattr(value, "min_dist"):
+            try:
+                out["min_dist"] = float(value.min_dist)
+            except Exception:
+                pass
+        return out
+    try:
+        import torch
+
+        if torch.is_tensor(value):
+            return value.detach().cpu().numpy().tolist()
+    except Exception:
+        pass
+    return str(value)
+
+
+def sanitize_info(info):
+    """Drop non-pickle-safe CrowdNav objects from an env info dict."""
+    if not isinstance(info, dict):
+        return {"_raw": _jsonable_scalar(info)}
+    out = {}
+    for key, value in info.items():
+        key_s = key if isinstance(key, str) else str(key)
+        if isinstance(value, dict):
+            out[key_s] = sanitize_info(value)
+        else:
+            out[key_s] = _jsonable_scalar(value)
+    return out
+
+
+def sanitize_trajectory(traj: dict) -> dict:
+    """Return a trajectory copy safe to pickle without CrowdNav imports."""
+    if not isinstance(traj, dict):
+        return traj
+    out = dict(traj)
+    infos = out.get("infos")
+    if infos is None:
+        return out
+    cleaned = []
+    for info in list(infos):
+        cleaned.append(sanitize_info(info))
+    out["infos"] = np.array(cleaned, dtype=object)
+    return out
+
+
+def sanitize_trajectories(trajs):
+    return [sanitize_trajectory(t) for t in (trajs or [])]
+
+
 def collect_trajectories(model, env, mapping_dicts, trajectory_num=10, benchmark_name="metaworld"):
     trajectories = []
     reward_sums = []
     for episode in range(trajectory_num):
+        # CrowdNav++ SRNN keeps RNN state across predict(); reset each episode.
+        if hasattr(model, "reset_hidden"):
+            model.reset_hidden()
         obs = env.reset()
         done = False
         episode_data = {'obs': [], 'actions': [], 'rewards': [], 'dones': [], 'infos': []}
         while not done:
             action, _ = model.predict(obs, deterministic=True)
+            action = np.asarray(action, dtype=np.float32).reshape(-1)
             next_obs, reward, done, info = env.step(action)
             
             episode_data['obs'].append(obs)
             episode_data['actions'].append(action)
             episode_data['rewards'].append(reward)
             episode_data['dones'].append(done)
-            episode_data['infos'].append(info)
+            episode_data['infos'].append(sanitize_info(info) if isinstance(info, dict) else sanitize_info({"_raw": info}))
             if benchmark_name == "metaworld":
                 for key, value in mapping_dicts.items():
                     if key not in episode_data.keys():

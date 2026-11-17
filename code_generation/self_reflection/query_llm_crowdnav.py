@@ -4,7 +4,16 @@ import os
 import pickle
 import sys
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.dirname(os.path.dirname(_HERE))
+sys.path.append(_REPO)
+# Local imports (generation.py) + CrowdNav vendor for legacy pickles that embed
+# crowd_sim.envs.utils.info.* event objects inside trajectory infos.
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+from code_generation.self_reflection.crowdnav_env_utils import _ensure_crowdnav_path
+
+_ensure_crowdnav_path()
 
 from generation import ZeroShotGenerator
 from code_generation.self_reflection.benchmark_prompt.crowdnav_prompt import (
@@ -14,7 +23,11 @@ from code_generation.self_reflection.benchmark_prompt.crowdnav_prompt import (
 from code_generation.self_reflection.benchmark_prompt.common_prompt import self_reflection_prompt
 from code_generation.self_reflection.crowdnav_exp import instruction_mapping, mapping_dicts
 from code_generation.self_reflection.crowdnav_exp_one_step import LLM_RESPONSE, env_is_valid
-from code_generation.self_reflection.utils import Logger, print_with_color
+from code_generation.self_reflection.utils import (
+    Logger,
+    print_with_color,
+    sanitize_trajectories,
+)
 from card_plus.dataset.candidate_loop import select_best_reward_candidates
 from card_plus.dataset.gate import dataset_gate_from_args
 
@@ -29,7 +42,9 @@ def main():
         rl_args = loaded_objects_dict["rl_args"]
         step = loaded_objects_dict["step"]
         message_history = loaded_objects_dict["message_history"]
-        trajectories_for_check_list = loaded_objects_dict["trajectories_for_check_list"]
+        trajectories_for_check_list = sanitize_trajectories(
+            loaded_objects_dict["trajectories_for_check_list"]
+        )
         feedback_str = loaded_objects_dict["feedback_str"]
 
     real_log_path = os.path.dirname(args.rl_question_file_path)
@@ -91,7 +106,7 @@ def main():
     with open(os.path.join(real_log_path, f"{LLM_RESPONSE}_{step}.pkl"), "wb") as file:
         pickle.dump(
             {
-                "trajectories_for_check_list": trajectories_for_check_list,
+                "trajectories_for_check_list": sanitize_trajectories(trajectories_for_check_list),
                 "message_history": code_generator.message_history,
             },
             file,
