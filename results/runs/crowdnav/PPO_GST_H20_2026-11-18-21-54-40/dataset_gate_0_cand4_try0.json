@@ -1,0 +1,86 @@
+{
+  "keep": false,
+  "skip_rl": true,
+  "mode": "gate",
+  "composite": 0.5930080329515375,
+  "reasons": [
+    "success/timeout=0.0000 < 0.80",
+    "anti_hack: flee_mean=0.5305 not worse than success_mean=0.0972+0.05 (reward farms clearance by fleeing)",
+    "anti_hack: flee_mean=0.5305 not worse than progress_mean=0.0816+0.05 (dense reward prefers fleeing over approaching the goal)",
+    "anti_hack: flee_sum=10.6099 >= progress_sum=0.9791 (cumulative flee return beats approaching the goal)",
+    "anti_hack: orbit_mean=0.3893 not worse than progress_mean=0.0816+0.05 (reward prefers high-clearance loitering over approaching the goal)",
+    "composite=0.5930 < 0.75",
+    "anti_hack=0.3145 < 0.65",
+    "separation=0.5970 < 0.70"
+  ],
+  "metrics": {
+    "offline_rank": 0.7373016395925259,
+    "separation": 0.5969658146614744,
+    "anti_hack": 0.3145407724556656,
+    "intra_scenario": 0.8194196428571429,
+    "composite": 0.5930080329515375,
+    "progress_auc": 0.9186300704396405,
+    "tpe_v1_rate": 0.0,
+    "success/collided": 0.9985917972187995,
+    "success/timeout": 0.0,
+    "timeout/collided": 1.0,
+    "return_std": 38.67844861279723,
+    "sep_scale": 13.537457014479031,
+    "mean_success": 2.7751355006058755,
+    "mean_collided": -15.218249365875367,
+    "mean_timeout": 114.1454211882958,
+    "sep_success_collided": 0.7907009031805264,
+    "gap_success_collided": 17.993384866481243,
+    "sep_success_timeout": 0.0002673125341393945,
+    "gap_success_timeout": -111.37028568768993,
+    "sep_timeout_collided": 0.9999292282697574,
+    "gap_timeout_collided": 129.36367055417116,
+    "intra_spearman_raw": 0.6388392857142857,
+    "intra_n_scenarios": 80.0,
+    "success_mean": 0.0971583333333333,
+    "progress_mean": 0.08159285714285715,
+    "flee_mean": 0.5304965404427169,
+    "orbit_mean": 0.3892945150610322,
+    "success_sum": 1.1658999999999997,
+    "progress_sum": 0.9791142857142858,
+    "flee_sum": 10.609930808854337,
+    "orbit_sum": 7.785890301220643,
+    "probe_margin": 0.05
+  },
+  "report": {
+    "n_episodes": 560,
+    "mean_return": -4.545953498449604,
+    "outcome_counts": {
+      "success": 23,
+      "collided": 494,
+      "timeout": 43
+    },
+    "progress_auc": 0.9186300704396405,
+    "tpe_v1_rate": 0.0,
+    "pair_accuracies": [
+      {
+        "pair": "success/collided",
+        "n_pairs": 11362,
+        "accuracy": 0.9985917972187995
+      },
+      {
+        "pair": "success/timeout",
+        "n_pairs": 989,
+        "accuracy": 0.0
+      },
+      {
+        "pair": "timeout/collided",
+        "n_pairs": 21242,
+        "accuracy": 1.0
+      }
+    ],
+    "extras": {
+      "threshold": 0.8,
+      "tpe_v1_pass": false,
+      "mean_progress": 0.21536696366017258,
+      "outcome_return_auc": 0.9186300704396405,
+      "progress_auc_meaning": "outcome_return_auc(success vs fail cumulative returns)",
+      "episode_return": "sum"
+    }
+  }
+}
