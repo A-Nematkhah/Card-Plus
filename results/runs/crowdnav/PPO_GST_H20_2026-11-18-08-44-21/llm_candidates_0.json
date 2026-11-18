@@ -1,0 +1,297 @@
+{
+  "step": 0,
+  "n_candidates_target": 5,
+  "n_accepted": 1,
+  "llm_calls": 20,
+  "winner": {
+    "slot": 0,
+    "attempt": 2,
+    "composite": 0.863649884175361,
+    "metrics": {
+      "offline_rank": 0.9883132473401751,
+      "separation": 0.9895872519783796,
+      "anti_hack": 0.6698525890165752,
+      "intra_scenario": 0.8899553571428572,
+      "composite": 0.863649884175361,
+      "progress_auc": 1.0,
+      "tpe_v1_rate": 1.0,
+      "success/collided": 1.0,
+      "success/timeout": 1.0,
+      "timeout/collided": 0.9532529893607005,
+      "return_std": 180.29602742944195,
+      "sep_scale": 63.10360960030468,
+      "mean_success": 443.7491545960862,
+      "mean_collided": -367.72669602162296,
+      "mean_timeout": -150.83086605999088,
+      "sep_success_collided": 0.9999973985019265,
+      "gap_success_collided": 811.4758506177092,
+      "sep_success_timeout": 0.9999191053727247,
+      "gap_success_timeout": 594.5800206560771,
+      "sep_timeout_collided": 0.9688452520604874,
+      "gap_timeout_collided": 216.89582996163207,
+      "intra_spearman_raw": 0.7799107142857145,
+      "intra_n_scenarios": 80.0,
+      "success_mean": 19.791666666666668,
+      "progress_mean": 2.9464285714285716,
+      "flee_mean": -7.393273226810301,
+      "orbit_mean": -0.02067345215764327,
+      "success_sum": 237.5,
+      "progress_sum": 35.35714285714286,
+      "flee_sum": -147.86546453620602,
+      "orbit_sum": -0.41346904315286537,
+      "probe_margin": 0.05
+    },
+    "selection": "composite"
+  },
+  "accepted": [
+    {
+      "slot": 0,
+      "attempt": 2,
+      "composite": 0.863649884175361,
+      "metrics": {
+        "offline_rank": 0.9883132473401751,
+        "separation": 0.9895872519783796,
+        "anti_hack": 0.6698525890165752,
+        "intra_scenario": 0.8899553571428572,
+        "composite": 0.863649884175361,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.9532529893607005,
+        "return_std": 180.29602742944195,
+        "sep_scale": 63.10360960030468,
+        "mean_success": 443.7491545960862,
+        "mean_collided": -367.72669602162296,
+        "mean_timeout": -150.83086605999088,
+        "sep_success_collided": 0.9999973985019265,
+        "gap_success_collided": 811.4758506177092,
+        "sep_success_timeout": 0.9999191053727247,
+        "gap_success_timeout": 594.5800206560771,
+        "sep_timeout_collided": 0.9688452520604874,
+        "gap_timeout_collided": 216.89582996163207,
+        "intra_spearman_raw": 0.7799107142857145,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 19.791666666666668,
+        "progress_mean": 2.9464285714285716,
+        "flee_mean": -7.393273226810301,
+        "orbit_mean": -0.02067345215764327,
+        "success_sum": 237.5,
+        "progress_sum": 35.35714285714286,
+        "flee_sum": -147.86546453620602,
+        "orbit_sum": -0.41346904315286537,
+        "probe_margin": 0.05
+      },
+      "code_dir": "I:\\Code\\Card-plus\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-18-08-44-21\\code_0\\candidates\\cand_0"
+    }
+  ],
+  "all_attempts": [
+    {
+      "slot": 0,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7309707476049871,
+      "reasons": [
+        "timeout/collided=0.1886 < 0.60",
+        "composite=0.7310 < 0.75",
+        "separation=0.6795 < 0.70"
+      ]
+    },
+    {
+      "slot": 0,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.789672727229639,
+      "reasons": [
+        "timeout/collided=0.3913 < 0.60"
+      ]
+    },
+    {
+      "slot": 0,
+      "attempt": 2,
+      "accepted": true,
+      "composite": 0.863649884175361,
+      "reasons": []
+    },
+    {
+      "slot": 1,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.734888639322072,
+      "reasons": [
+        "timeout/collided=0.1779 < 0.60",
+        "composite=0.7349 < 0.75",
+        "separation=0.6705 < 0.70"
+      ]
+    },
+    {
+      "slot": 1,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.744022825150228,
+      "reasons": [
+        "timeout/collided=0.1963 < 0.60",
+        "composite=0.7440 < 0.75",
+        "separation=0.6728 < 0.70"
+      ]
+    },
+    {
+      "slot": 1,
+      "attempt": 2,
+      "accepted": false,
+      "composite": 0.7527654278720397,
+      "reasons": [
+        "timeout/collided=0.2046 < 0.60",
+        "separation=0.6782 < 0.70"
+      ]
+    },
+    {
+      "slot": 1,
+      "attempt": 3,
+      "accepted": false,
+      "composite": 0.772929994065807,
+      "reasons": [
+        "timeout/collided=0.2547 < 0.60"
+      ]
+    },
+    {
+      "slot": 2,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.6266053114823896,
+      "reasons": [
+        "success/timeout=0.0748 < 0.80",
+        "anti_hack: flee_mean=1.5265 not worse than progress_mean=0.5146+0.05 (dense reward prefers fleeing over approaching the goal)",
+        "anti_hack: flee_sum=30.5295 >= progress_sum=6.1749 (cumulative flee return beats approaching the goal)",
+        "anti_hack: orbit_mean=2.0691 not worse than progress_mean=0.5146+0.05 (reward prefers high-clearance loitering over approaching the goal)",
+        "composite=0.6266 < 0.75",
+        "anti_hack=0.3911 < 0.65",
+        "separation=0.5818 < 0.70"
+      ]
+    },
+    {
+      "slot": 2,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.7275929827985561,
+      "reasons": [
+        "timeout/collided=0.1369 < 0.60",
+        "composite=0.7276 < 0.75",
+        "separation=0.6670 < 0.70"
+      ]
+    },
+    {
+      "slot": 2,
+      "attempt": 2,
+      "accepted": false,
+      "composite": 0.6938257743326567,
+      "reasons": [
+        "timeout/collided=0.0013 < 0.60",
+        "composite=0.6938 < 0.75",
+        "separation=0.6399 < 0.70"
+      ]
+    },
+    {
+      "slot": 2,
+      "attempt": 3,
+      "accepted": false,
+      "composite": 0.7091481795768202,
+      "reasons": [
+        "timeout/collided=0.1339 < 0.60",
+        "composite=0.7091 < 0.75",
+        "separation=0.6679 < 0.70"
+      ]
+    },
+    {
+      "slot": 3,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7957145915692565,
+      "reasons": [
+        "timeout/collided=0.4165 < 0.60"
+      ]
+    },
+    {
+      "slot": 3,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.8516398208631506,
+      "reasons": [
+        "anti_hack=0.6285 < 0.65"
+      ]
+    },
+    {
+      "slot": 3,
+      "attempt": 2,
+      "accepted": false,
+      "composite": 0.8599717824427143,
+      "reasons": [
+        "anti_hack=0.6394 < 0.65"
+      ]
+    },
+    {
+      "slot": 3,
+      "attempt": 3,
+      "accepted": false,
+      "composite": 0.8043128317173885,
+      "reasons": [
+        "timeout/collided=0.4960 < 0.60"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7147866536710206,
+      "reasons": [
+        "timeout/collided=0.0412 < 0.60",
+        "composite=0.7148 < 0.75",
+        "separation=0.6528 < 0.70"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.7427366737021723,
+      "reasons": [
+        "timeout/collided=0.1312 < 0.60",
+        "composite=0.7427 < 0.75",
+        "separation=0.6622 < 0.70"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 2,
+      "accepted": false,
+      "composite": 0.7402197773507877,
+      "reasons": [
+        "timeout/collided=0.1559 < 0.60",
+        "composite=0.7402 < 0.75",
+        "separation=0.6655 < 0.70"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 3,
+      "accepted": false,
+      "composite": 0.7332917381544739,
+      "reasons": [
+        "timeout/collided=0.1754 < 0.60",
+        "composite=0.7333 < 0.75",
+        "separation=0.6675 < 0.70"
+      ]
+    },
+    {
+      "slot": 5,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7389604415046416,
+      "reasons": [
+        "timeout/collided=0.1793 < 0.60",
+        "composite=0.7390 < 0.75",
+        "separation=0.6677 < 0.70"
+      ]
+    }
+  ]
+}
