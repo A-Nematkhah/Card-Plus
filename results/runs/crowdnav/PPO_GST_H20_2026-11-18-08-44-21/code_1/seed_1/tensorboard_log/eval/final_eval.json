@@ -1,0 +1,7 @@
+{
+  "final_eval_episodes": 100,
+  "success_rate": 0.0,
+  "mean_return": -425.4408083534241,
+  "mean_length": 67.21,
+  "timesteps": 249990
+}
