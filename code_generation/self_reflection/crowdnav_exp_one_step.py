@@ -121,7 +121,10 @@ def train_and_eval(
     """
     from code_generation.self_reflection.crowdnav_pp_env import make_dual_view_env
     from code_generation.self_reflection.crowdnav_ppo_train import (
+        is_usable_torch_checkpoint,
         load_policy_adapter,
+        read_checkpoint_meta,
+        remove_corrupt_checkpoint,
         train_ppo,
     )
 
@@ -170,12 +173,50 @@ def train_and_eval(
         "BLUE",
     )
 
+    # Heal interrupted / corrupt checkpoints so resume never dies on a half-written .pt.
+    npz_path = os.path.join(eval_log_path, "evaluations.npz")
+    if os.path.isfile(ckpt_path) and not is_usable_torch_checkpoint(ckpt_path):
+        print_with_color(
+            f"Corrupt PPO checkpoint removed (will retrain): {ckpt_path}",
+            "YELLOW",
+        )
+        remove_corrupt_checkpoint(ckpt_path)
+    meta = read_checkpoint_meta(ckpt_path) if os.path.isfile(ckpt_path) else {}
+    train_finished = bool(
+        meta.get("complete")
+        or os.path.isfile(npz_path)
+        or os.path.isfile(os.path.join(eval_log_path, "final_eval.json"))
+    )
+
     if load_model and not resume_model_path:
-        if not os.path.isfile(ckpt_path):
-            raise FileNotFoundError(f"Missing CrowdNav PPO checkpoint: {ckpt_path}")
+        if not os.path.isfile(ckpt_path) or not is_usable_torch_checkpoint(ckpt_path):
+            print_with_color(
+                "--load_model requested but checkpoint missing/corrupt; training instead",
+                "YELLOW",
+            )
+            load_model = False
+        elif not train_finished:
+            # Mid-train kill: do not skip the remaining budget.
+            print_with_color(
+                f"Incomplete short-train checkpoint (steps={meta.get('steps', '?')}); "
+                "resuming PPO instead of --load_model skip",
+                "YELLOW",
+            )
+            resume_model_path = ckpt_path
+            load_model = False
+    elif (
+        (not load_model)
+        and (not resume_model_path)
+        and train_finished
+        and os.path.isfile(ckpt_path)
+        and is_usable_torch_checkpoint(ckpt_path)
+    ):
+        # Eval artifacts already present: skip another full short budget.
+        load_model = True
+
+    if load_model and not resume_model_path:
         model, traj_vec = load_policy_adapter(ckpt_path, task_name=args.task_name, seed=seed)
         learning_result = {}
-        npz_path = os.path.join(eval_log_path, "evaluations.npz")
         if os.path.isfile(npz_path):
             loaded = np.load(npz_path)
             learning_result = {key: loaded[key] for key in loaded.files}
@@ -188,12 +229,26 @@ def train_and_eval(
                 "YELLOW",
             )
             resume = None
-        if resume is None and load_model is False and os.path.isfile(ckpt_path) and resume_model_path:
+        if (
+            resume is None
+            and (not train_finished)
+            and os.path.isfile(ckpt_path)
+            and is_usable_torch_checkpoint(ckpt_path)
+        ):
+            # Auto-resume mid-train weights when present.
             resume = ckpt_path
+        done_steps = int(meta.get("steps", 0) or 0) if resume else 0
+        remain = steps_budget
+        if resume and done_steps > 0 and not train_finished:
+            remain = max(int(steps_budget) - done_steps, int(getattr(args, "eval_freq", 20_000)))
+            print_with_color(
+                f"Resuming short-train: done={done_steps} remain≈{remain} (target={steps_budget})",
+                "BLUE",
+            )
         model, learning_result, ckpt_path = train_ppo(
             task_name=args.task_name,
             seed=seed,
-            total_steps=steps_budget,
+            total_steps=remain,
             use_ground_truth_reward=use_ground_truth_reward,
             reward_code=reward_code,
             save_dir=train_log_path,

@@ -19,6 +19,75 @@ from code_generation.self_reflection.crowdnav_env_utils import (
 from code_generation.self_reflection.crowdnav_pp_env import make_dual_view_env, make_pp_vec_env
 
 
+def checkpoint_meta_path(ckpt_path: str) -> str:
+    return f"{ckpt_path}.meta.json"
+
+
+def atomic_torch_save(
+    obj: Any,
+    path: str,
+    *,
+    steps: int = 0,
+    complete: bool = False,
+) -> None:
+    """Write ``.pt`` via temp+replace so kills mid-save cannot leave a corrupt file."""
+    path = os.path.abspath(path)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = f"{path}.tmp"
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+    meta = {
+        "steps": int(steps),
+        "complete": bool(complete),
+        "path": path,
+    }
+    meta_tmp = checkpoint_meta_path(path) + ".tmp"
+    with open(meta_tmp, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+    os.replace(meta_tmp, checkpoint_meta_path(path))
+
+
+def read_checkpoint_meta(ckpt_path: str) -> Dict[str, Any]:
+    meta_path = checkpoint_meta_path(ckpt_path)
+    if not os.path.isfile(meta_path):
+        return {}
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def is_usable_torch_checkpoint(path: str) -> bool:
+    """True if file exists and ``torch.load`` can read it (rejects truncated saves)."""
+    if not path or not os.path.isfile(path):
+        return False
+    if os.path.getsize(path) < 64:
+        return False
+    try:
+        torch.load(path, map_location="cpu", weights_only=True)
+        return True
+    except Exception:
+        try:
+            # Older PyTorch / non-weights_only state_dicts
+            torch.load(path, map_location="cpu")
+            return True
+        except Exception:
+            return False
+
+
+def remove_corrupt_checkpoint(path: str) -> None:
+    for p in (path, f"{path}.tmp", checkpoint_meta_path(path), checkpoint_meta_path(path) + ".tmp"):
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+        except OSError:
+            pass
+
+
 def default_algo_args(
     *,
     seed: int = 1,
@@ -244,7 +313,20 @@ def train_ppo(
             base=config.robot.policy,
         )
         if resume_path and os.path.isfile(resume_path):
-            actor_critic.load_state_dict(torch.load(resume_path, map_location=device))
+            if not is_usable_torch_checkpoint(resume_path):
+                print(
+                    f"[warn] Ignoring corrupt resume checkpoint: {resume_path}",
+                    flush=True,
+                )
+                remove_corrupt_checkpoint(resume_path)
+            else:
+                actor_critic.load_state_dict(torch.load(resume_path, map_location=device))
+                meta = read_checkpoint_meta(resume_path)
+                print(
+                    f"[resume] loaded {resume_path} "
+                    f"(meta_steps={meta.get('steps', '?')} complete={meta.get('complete', False)})",
+                    flush=True,
+                )
         nn.DataParallel(actor_critic).to(device)
 
         agent = ppo_mod.PPO(
@@ -361,18 +443,28 @@ def train_ppo(
                 results_log.append(metrics["results"].reshape(-1))
                 lengths_log.append(metrics["ep_lengths"].reshape(-1))
                 successes_log.append(metrics["successes"].reshape(-1))
-                torch.save(actor_critic.state_dict(), ckpt_path)
+                atomic_torch_save(
+                    actor_critic.state_dict(),
+                    ckpt_path,
+                    steps=int(total_num_steps),
+                    complete=False,
+                )
                 print(
                     f"[mid-eval] steps={total_num_steps} episodes={n_eval_episodes} "
                     f"success_rate={float(np.mean(metrics['successes'])):.3f}",
                     flush=True,
                 )
 
-        torch.save(actor_critic.state_dict(), ckpt_path)
+        total_num_steps = num_updates * algo_args.num_processes * algo_args.num_steps
+        atomic_torch_save(
+            actor_critic.state_dict(),
+            ckpt_path,
+            steps=int(total_num_steps),
+            complete=False,
+        )
 
         # End-of-short evaluation only (default 100 episodes).
         if end_eps > 0:
-            total_num_steps = num_updates * algo_args.num_processes * algo_args.num_steps
             metrics = _eval_episodes(actor_critic, envs, device, algo_args, end_eps)
             timesteps_log.append(total_num_steps)
             results_log.append(metrics["results"].reshape(-1))
@@ -384,6 +476,13 @@ def train_ppo(
                 f"success_rate={sr:.3f}",
                 flush=True,
             )
+
+        atomic_torch_save(
+            actor_critic.state_dict(),
+            ckpt_path,
+            steps=int(total_num_steps),
+            complete=True,
+        )
 
         # Pad ragged eval rows with NaN (mid-eval may use fewer episodes than final).
         def _stack(rows):
@@ -448,6 +547,11 @@ def load_policy_adapter(
             base_kwargs=algo_args,
             base=config.robot.policy,
         )
+        if not is_usable_torch_checkpoint(checkpoint_path):
+            raise RuntimeError(
+                f"Corrupt or unreadable PPO checkpoint: {checkpoint_path}. "
+                "Delete it (or re-run without --load_model) to retrain."
+            )
         actor_critic.load_state_dict(torch.load(checkpoint_path, map_location=device))
         actor_critic.to(device)
         actor_critic.eval()

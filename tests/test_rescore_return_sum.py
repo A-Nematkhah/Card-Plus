@@ -35,3 +35,17 @@ def test_outcome_auc_ties_half():
         SimpleNamespace(labels=SimpleNamespace(outcome="timeout")),
     ]
     assert abs(outcome_return_auc(eps, [2.0, 2.0]) - 0.5) < 1e-12
+
+
+def test_pair_accuracy_vectorized_matches_preference():
+    eps = [
+        SimpleNamespace(labels=SimpleNamespace(outcome="success")),
+        SimpleNamespace(labels=SimpleNamespace(outcome="success")),
+        SimpleNamespace(labels=SimpleNamespace(outcome="collided")),
+        SimpleNamespace(labels=SimpleNamespace(outcome="collided")),
+    ]
+    returns = [5.0, 1.0, 0.0, 4.0]
+    pa = _pair_accuracy(eps, returns, "success", "collided")
+    # pairs: (5>0),(5>4),(1>0),(1>4) → 1,1,1,0 = 0.75
+    assert pa.n_pairs == 4
+    assert abs(pa.accuracy - 0.75) < 1e-12

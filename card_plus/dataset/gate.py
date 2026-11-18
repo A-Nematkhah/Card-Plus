@@ -370,7 +370,10 @@ def run_dataset_gate(
 
     episodes = _load_episodes_cached(path)
     report, labeled, returns = rescore_episodes_detailed(
-        episodes, reward_fn, threshold=cfg.tpe_v1_threshold
+        episodes,
+        reward_fn,
+        threshold=cfg.tpe_v1_threshold,
+        reward_code=code_text,
     )
     _pairs_ok, reasons, _rank, _pair_metrics = evaluate_pair_floors(report, th)
 

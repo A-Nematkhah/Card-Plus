@@ -228,15 +228,20 @@ for ($k = 1; $k -le $TrainRounds; $k++) {
         # If train already finished and checkpoint exists, skip re-training.
         $ckpt = Join-Path $runLogPath "checkpoint_$k.pkl"
         $modelPt = Join-Path $runLogPath "code_$($k - 1)\seed_1\tensorboard_log\latest_model.pt"
+        $evalNpz = Join-Path $runLogPath "code_$($k - 1)\seed_1\tensorboard_log\eval\evaluations.npz"
+        $finalEval = Join-Path $runLogPath "code_$($k - 1)\seed_1\tensorboard_log\eval\final_eval.json"
         $skippedTrain = $false
         if (Test-Path -LiteralPath $ckpt) {
             $stepArgs += "--checkpoint"
             $skippedTrain = $true
             Write-Host "Found $ckpt -> loading with --checkpoint (skip train)"
-        } elseif (Test-Path -LiteralPath $modelPt) {
-            # Post-train crash (e.g. trajectory collect): reuse .pt, skip another long train.
+        } elseif ((Test-Path -LiteralPath $modelPt) -and ((Test-Path -LiteralPath $evalNpz) -or (Test-Path -LiteralPath $finalEval))) {
+            # Train finished (eval artifacts present): skip retrain, finish collect/feedback.
             $stepArgs += "--load_model"
-            Write-Host "Found $modelPt -> --load_model (skip train, finish collect/feedback)"
+            Write-Host "Found completed $modelPt + eval -> --load_model (skip train)"
+        } elseif (Test-Path -LiteralPath $modelPt) {
+            # Mid-train interrupt: do NOT --load_model; Python resumes/heals corrupt .pt.
+            Write-Host "Found incomplete $modelPt (no eval yet) -> resume/retrain in Python"
         }
         Invoke-Card $stepArgs "step$k"
         if (-not $skippedTrain) {

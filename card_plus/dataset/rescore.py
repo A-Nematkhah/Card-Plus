@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
@@ -13,10 +15,13 @@ import numpy as np
 
 from card_plus.dataset.labels import label_episode
 from card_plus.dataset.schema import Episode, load_episode
-from card_plus.progress import crowdnav_goal_progress
 
 PathLike = Union[str, Path]
 RewardFn = Callable[[np.ndarray, np.ndarray], Any]  # (action, obs) -> float | (float, dict)
+
+# Parallel rescore is opt-in (CARD_GATE_WORKERS>1). Default serial: packing +
+# vectorized pairwise already make one gate pass ~sub-second; LLM dominates wall time.
+_DEFAULT_GATE_WORKERS = 1
 
 
 @dataclass
@@ -92,26 +97,130 @@ def _scalar_reward(result: Any) -> float:
     return float(result)
 
 
+def ensure_episode_gate_arrays(episode: Episode) -> None:
+    """Materialize stacked action/obs arrays once (mutates episode attributes)."""
+    if getattr(episode, "_gate_actions", None) is not None:
+        if episode.labels is None:
+            episode.labels = label_episode(episode)
+        return
+    episode._gate_actions = episode.actions_array()  # type: ignore[attr-defined]
+    episode._gate_obs = episode.obs_array()  # type: ignore[attr-defined]
+    if episode.initial_obs is None:
+        episode._gate_initial = None  # type: ignore[attr-defined]
+    else:
+        episode._gate_initial = np.asarray(episode.initial_obs, dtype=np.float64)  # type: ignore[attr-defined]
+    if episode.labels is None:
+        episode.labels = label_episode(episode)
+
+
+def score_episode_arrays(
+    reward_fn: RewardFn,
+    actions: np.ndarray,
+    obs: np.ndarray,
+    initial_obs: Optional[np.ndarray],
+) -> np.ndarray:
+    """Tight step loop over prestacked arrays (avoids StepRecord attribute churn)."""
+    reset = getattr(reward_fn, "reset_pre_obs", None)
+    set_pre = getattr(reward_fn, "set_pre_obs", None)
+    if reset is not None:
+        reset()
+    n = int(actions.shape[0])
+    out = np.empty(n, dtype=np.float64)
+    prev = None if initial_obs is None else initial_obs
+    for t in range(n):
+        obs_t = obs[t]
+        if set_pre is not None:
+            set_pre(prev if prev is not None else obs_t)
+        out[t] = _scalar_reward(reward_fn(actions[t], obs_t))
+        prev = obs_t
+    return out
+
+
 def score_episode(episode: Episode, reward_fn: RewardFn) -> np.ndarray:
     """Re-score each stored step with ``reward_fn(action, post_step_obs)``.
 
     Sets ``pre_obs`` from ``episode.initial_obs`` then prior step obs when the
     reward callable supports ``set_pre_obs`` (delta-progress rewards).
     """
-    reset = getattr(reward_fn, "reset_pre_obs", None)
-    set_pre = getattr(reward_fn, "set_pre_obs", None)
-    if reset is not None:
-        reset()
-    out = []
-    prev: Optional[np.ndarray] = (
-        None if episode.initial_obs is None else np.asarray(episode.initial_obs, dtype=np.float64)
+    ensure_episode_gate_arrays(episode)
+    return score_episode_arrays(
+        reward_fn,
+        episode._gate_actions,  # type: ignore[attr-defined]
+        episode._gate_obs,  # type: ignore[attr-defined]
+        episode._gate_initial,  # type: ignore[attr-defined]
     )
-    for step in episode.steps:
-        if set_pre is not None:
-            set_pre(prev if prev is not None else step.obs)
-        out.append(_scalar_reward(reward_fn(step.action, step.obs)))
-        prev = np.asarray(step.obs, dtype=np.float64)
-    return np.asarray(out, dtype=np.float64)
+
+
+def _gate_workers() -> int:
+    raw = os.environ.get("CARD_GATE_WORKERS", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return _DEFAULT_GATE_WORKERS
+    return _DEFAULT_GATE_WORKERS
+
+
+def _score_pack_chunk(
+    payload: Tuple[str, List[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]]],
+) -> List[float]:
+    """ProcessPool worker: compile reward once, score a chunk of packed episodes."""
+    code, packs = payload
+    reward_fn = load_reward_fn_from_code(code)
+    out: List[float] = []
+    for actions, obs, initial in packs:
+        out.append(float(np.sum(score_episode_arrays(reward_fn, actions, obs, initial))))
+    return out
+
+
+def episode_returns_for_reward(
+    episodes: Sequence[Episode],
+    reward_fn: RewardFn,
+    *,
+    reward_code: Optional[str] = None,
+    workers: Optional[int] = None,
+) -> List[float]:
+    """Score all episodes; optionally parallelize across processes when code is given."""
+    for ep in episodes:
+        ensure_episode_gate_arrays(ep)
+    n_workers = _DEFAULT_GATE_WORKERS if workers is None else int(workers)
+    use_pool = (
+        reward_code is not None
+        and n_workers > 1
+        and len(episodes) >= 32
+    )
+    if not use_pool:
+        return [
+            float(np.sum(score_episode(ep, reward_fn)))
+            for ep in episodes
+        ]
+
+    packs = [
+        (
+            ep._gate_actions,  # type: ignore[attr-defined]
+            ep._gate_obs,  # type: ignore[attr-defined]
+            ep._gate_initial,  # type: ignore[attr-defined]
+        )
+        for ep in episodes
+    ]
+    # Chunk to cut IPC overhead vs one task per episode.
+    n_chunks = min(n_workers * 2, len(packs))
+    chunk_size = max(1, (len(packs) + n_chunks - 1) // n_chunks)
+    payloads = []
+    for i in range(0, len(packs), chunk_size):
+        payloads.append((str(reward_code), packs[i : i + chunk_size]))
+    try:
+        returns: List[float] = []
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            for part in pool.map(_score_pack_chunk, payloads):
+                returns.extend(part)
+        return returns
+    except Exception:
+        # Windows spawn / nested __main__ issues → safe serial fallback.
+        return [
+            float(np.sum(score_episode(ep, reward_fn)))
+            for ep in episodes
+        ]
 
 
 def _episode_return(rewards: np.ndarray) -> float:
@@ -125,6 +234,28 @@ def _episode_return(rewards: np.ndarray) -> float:
 _episode_mean_return = _episode_return
 
 
+def _outcomes_and_returns(
+    episodes: Sequence[Episode],
+    returns: Sequence[float],
+) -> Tuple[np.ndarray, np.ndarray]:
+    outs = np.asarray(
+        [(ep.labels or label_episode(ep)).outcome for ep in episodes],
+        dtype=object,
+    )
+    rets = np.asarray(list(returns), dtype=np.float64)
+    return outs, rets
+
+
+def _mann_whitney_auc(better: np.ndarray, worse: np.ndarray) -> float:
+    """P(better > worse) + 0.5 P(tie), vectorized."""
+    if better.size == 0 or worse.size == 0:
+        return float("nan")
+    # Broadcasting: [n_better, n_worse]
+    gt = better[:, None] > worse[None, :]
+    eq = better[:, None] == worse[None, :]
+    return float((gt.astype(np.float64) + 0.5 * eq.astype(np.float64)).mean())
+
+
 def outcome_return_auc(episodes: Sequence[Episode], returns: Sequence[float]) -> float:
     """Mann–Whitney AUC on episode returns: P(return_success > return_fail) + 0.5 ties.
 
@@ -132,18 +263,10 @@ def outcome_return_auc(episodes: Sequence[Episode], returns: Sequence[float]) ->
     **not** an AUC of the task-progress measure — it ranks episode returns by outcome.
     Returns are cumulative (sum) rewards, matching the online RL objective.
     """
-    succ = [r for ep, r in zip(episodes, returns) if (ep.labels or label_episode(ep)).outcome == "success"]
-    fail = [r for ep, r in zip(episodes, returns) if (ep.labels or label_episode(ep)).outcome != "success"]
-    if not succ or not fail:
-        return float("nan")
-    wins = 0.0
-    for s in succ:
-        for f in fail:
-            if s > f:
-                wins += 1.0
-            elif s == f:
-                wins += 0.5
-    return float(wins / (len(succ) * len(fail)))
+    outs, rets = _outcomes_and_returns(episodes, returns)
+    succ = rets[outs == "success"]
+    fail = rets[outs != "success"]
+    return _mann_whitney_auc(succ, fail)
 
 
 # Back-compat alias (name was misleading; prefer outcome_return_auc).
@@ -160,18 +283,13 @@ def _pair_accuracy(
 
     Ties count as 0.5 (same policy as ``outcome_return_auc``).
     """
-    group_a = [r for ep, r in zip(episodes, returns) if (ep.labels or label_episode(ep)).outcome == a]
-    group_b = [r for ep, r in zip(episodes, returns) if (ep.labels or label_episode(ep)).outcome == b]
-    n = 0
-    correct = 0.0
-    for ra in group_a:
-        for rb in group_b:
-            n += 1
-            if ra > rb:
-                correct += 1.0
-            elif ra == rb:
-                correct += 0.5
-    acc = float(correct / n) if n else float("nan")
+    outs, rets = _outcomes_and_returns(episodes, returns)
+    group_a = rets[outs == a]
+    group_b = rets[outs == b]
+    n = int(group_a.size * group_b.size)
+    if n == 0:
+        return PairAccuracy(pair=f"{a}/{b}", n_pairs=0, accuracy=float("nan"))
+    acc = _mann_whitney_auc(group_a, group_b)
     return PairAccuracy(pair=f"{a}/{b}", n_pairs=n, accuracy=acc)
 
 
@@ -185,15 +303,15 @@ def tpe_v1_rate(
 
     Mirrors this repo's ``trajectories_return_check`` style (not pairwise γ-TPE).
     """
-    succ = [r for ep, r in zip(episodes, returns) if (ep.labels or label_episode(ep)).outcome == "success"]
-    fail = [r for ep, r in zip(episodes, returns) if (ep.labels or label_episode(ep)).outcome != "success"]
-    if not succ:
+    outs, rets = _outcomes_and_returns(episodes, returns)
+    succ = rets[outs == "success"]
+    fail = rets[outs != "success"]
+    if succ.size == 0:
         return None
-    if not fail:
+    if fail.size == 0:
         return 1.0
-    worst_fail = max(fail)
-    correct = sum(1 for r in succ if r > worst_fail)
-    rate = float(correct / len(succ))
+    worst_fail = float(fail.max())
+    rate = float(np.mean(succ > worst_fail))
     # threshold is reported by caller; here we return the raw rate
     del threshold
     return rate
@@ -211,21 +329,39 @@ def _finalize_report(
         assert ep.labels is not None
         counts[ep.labels.outcome] = counts.get(ep.labels.outcome, 0) + 1
 
-    pairs = [
-        _pair_accuracy(labeled, returns, "success", "collided"),
-        _pair_accuracy(labeled, returns, "success", "timeout"),
-        _pair_accuracy(labeled, returns, "timeout", "collided"),
+    outs, rets = _outcomes_and_returns(labeled, returns)
+    pairs = []
+    for a, b in (("success", "collided"), ("success", "timeout"), ("timeout", "collided")):
+        group_a = rets[outs == a]
+        group_b = rets[outs == b]
+        n = int(group_a.size * group_b.size)
+        pairs.append(
+            PairAccuracy(
+                pair=f"{a}/{b}",
+                n_pairs=n,
+                accuracy=_mann_whitney_auc(group_a, group_b) if n else float("nan"),
+            )
+        )
+    succ = rets[outs == "success"]
+    fail = rets[outs != "success"]
+    rate = None
+    if succ.size == 0:
+        rate = None
+    elif fail.size == 0:
+        rate = 1.0
+    else:
+        rate = float(np.mean(succ > float(fail.max())))
+    ret_auc = _mann_whitney_auc(succ, fail)
+    # Prefer label progress (already computed on load) over restacking obs arrays.
+    progress_vals = [
+        float(getattr(ep.labels, "progress", 0.0) or 0.0)
+        for ep in labeled
+        if ep.labels is not None
     ]
-    rate = tpe_v1_rate(labeled, returns, threshold=threshold)
-    ret_auc = outcome_return_auc(labeled, returns)
     extra = {
         "threshold": threshold,
         "tpe_v1_pass": None if rate is None else bool(rate >= threshold),
-        "mean_progress": float(
-            np.mean([crowdnav_goal_progress({"obs": ep.obs_array()}) for ep in labeled])
-        )
-        if labeled
-        else 0.0,
+        "mean_progress": float(np.mean(progress_vals)) if progress_vals else 0.0,
         "outcome_return_auc": ret_auc,
         "progress_auc_meaning": "outcome_return_auc(success vs fail cumulative returns)",
         "episode_return": "sum",
@@ -248,9 +384,15 @@ def rescore_episodes(
     reward_fn: RewardFn,
     *,
     threshold: float = 0.8,
+    reward_code: Optional[str] = None,
+    workers: Optional[int] = None,
 ) -> RescoreReport:
     report, _labeled, _returns = rescore_episodes_detailed(
-        episodes, reward_fn, threshold=threshold
+        episodes,
+        reward_fn,
+        threshold=threshold,
+        reward_code=reward_code,
+        workers=workers,
     )
     return report
 
@@ -260,15 +402,16 @@ def rescore_episodes_detailed(
     reward_fn: RewardFn,
     *,
     threshold: float = 0.8,
+    reward_code: Optional[str] = None,
+    workers: Optional[int] = None,
 ) -> Tuple[RescoreReport, List[Episode], List[float]]:
     """Like ``rescore_episodes`` but also returns labeled episodes and cumulative returns."""
-    labeled: List[Episode] = []
-    returns: List[float] = []
-    for ep in episodes:
-        if ep.labels is None:
-            ep.labels = label_episode(ep)
-        labeled.append(ep)
-        returns.append(_episode_return(score_episode(ep, reward_fn)))
+    labeled: List[Episode] = list(episodes)
+    for ep in labeled:
+        ensure_episode_gate_arrays(ep)
+    returns = episode_returns_for_reward(
+        labeled, reward_fn, reward_code=reward_code, workers=workers
+    )
     return _finalize_report(labeled, returns, threshold=threshold), labeled, returns
 
 
@@ -311,7 +454,11 @@ def load_dataset_episodes(dataset_dir: PathLike) -> List[Episode]:
     else:
         ep_dir = root / "episodes"
         paths = sorted(ep_dir.glob("*.pkl")) + sorted(ep_dir.glob("*.npz"))
-    return [load_episode(p) for p in paths]
+    episodes = [load_episode(p) for p in paths]
+    # Warm gate arrays/labels once so candidate retries avoid repeated stacking.
+    for ep in episodes:
+        ensure_episode_gate_arrays(ep)
+    return episodes
 
 
 def builtin_reward_fn(name: str) -> RewardFn:
