@@ -1,0 +1,353 @@
+{
+  "step": 1,
+  "n_candidates_target": 5,
+  "n_accepted": 5,
+  "llm_calls": 12,
+  "winner": {
+    "slot": 4,
+    "attempt": 3,
+    "composite": 0.8634465670027456,
+    "metrics": {
+      "offline_rank": 0.9902786931550701,
+      "separation": 0.9905343114468858,
+      "anti_hack": 0.6675726570343857,
+      "intra_scenario": 0.8899553571428572,
+      "composite": 0.8634465670027456,
+      "progress_auc": 1.0,
+      "tpe_v1_rate": 1.0,
+      "success/collided": 1.0,
+      "success/timeout": 1.0,
+      "timeout/collided": 0.9611147726202806,
+      "return_std": 225.4790440955237,
+      "sep_scale": 78.91766543343329,
+      "mean_success": 552.4989855153036,
+      "mean_collided": -460.0574603271621,
+      "mean_timeout": -180.99703927198908,
+      "sep_success_collided": 0.999997322280327,
+      "gap_success_collided": 1012.5564458424658,
+      "sep_success_timeout": 0.9999080750890015,
+      "gap_success_timeout": 733.4960247872928,
+      "sep_timeout_collided": 0.9716975369713284,
+      "gap_timeout_collided": 279.06042105517304,
+      "intra_spearman_raw": 0.7799107142857145,
+      "intra_n_scenarios": 80.0,
+      "success_mean": 24.583333333333332,
+      "progress_mean": 3.535714285714286,
+      "flee_mean": -8.871927872172364,
+      "orbit_mean": -0.02480814258917192,
+      "success_sum": 295.0,
+      "progress_sum": 42.42857142857143,
+      "flee_sum": -177.43855744344728,
+      "orbit_sum": -0.49616285178343844,
+      "probe_margin": 0.05
+    },
+    "selection": "composite"
+  },
+  "accepted": [
+    {
+      "slot": 0,
+      "attempt": 2,
+      "composite": 0.8582765984003972,
+      "metrics": {
+        "offline_rank": 0.970965539967988,
+        "separation": 0.9571326182871912,
+        "anti_hack": 0.6997770535343272,
+        "intra_scenario": 0.880357142857143,
+        "composite": 0.8582765984003972,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.8838621598719518,
+        "return_std": 90.78890364220419,
+        "sep_scale": 31.776116274771464,
+        "mean_success": 234.99932367686907,
+        "mean_collided": -181.4688062100109,
+        "mean_timeout": -120.66469284799271,
+        "sep_success_collided": 0.9999979676702205,
+        "gap_success_collided": 416.46812988688,
+        "sep_success_timeout": 0.999986227315146,
+        "gap_success_timeout": 355.6640165248618,
+        "sep_timeout_collided": 0.8714136598762071,
+        "gap_timeout_collided": 60.8041133620182,
+        "intra_spearman_raw": 0.7607142857142859,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 10.833333333333334,
+        "progress_mean": 2.357142857142857,
+        "flee_mean": -5.9146185814482415,
+        "orbit_mean": -0.016538761726114615,
+        "success_sum": 130.0,
+        "progress_sum": 28.285714285714285,
+        "flee_sum": -118.29237162896483,
+        "orbit_sum": -0.3307752345222923,
+        "probe_margin": 0.05
+      },
+      "code_dir": "I:\\Code\\Card-plus\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-18-08-44-21\\code_1\\candidates\\cand_0"
+    },
+    {
+      "slot": 1,
+      "attempt": 0,
+      "composite": 0.8312078473331863,
+      "metrics": {
+        "offline_rank": 0.9700240090386969,
+        "separation": 0.9471190053441473,
+        "anti_hack": 0.6897414113250033,
+        "intra_scenario": 0.8104910714285715,
+        "composite": 0.8312078473331863,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.8800960361547877,
+        "return_std": 89.9509874577102,
+        "sep_scale": 31.482845610198567,
+        "mean_success": 214.48017977648044,
+        "mean_collided": -196.75438184543353,
+        "mean_timeout": -144.22650975921124,
+        "sep_success_collided": 0.9999978759396114,
+        "gap_success_collided": 411.23456162191394,
+        "sep_success_timeout": 0.9999887340995538,
+        "gap_success_timeout": 358.7066895356917,
+        "sep_timeout_collided": 0.8413704059932768,
+        "gap_timeout_collided": 52.52787208622229,
+        "intra_spearman_raw": 0.6209821428571429,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 9.733333333333333,
+        "progress_mean": 1.1571428571428573,
+        "flee_mean": -5.9146185814482415,
+        "orbit_mean": -0.016538761726114615,
+        "success_sum": 116.8,
+        "progress_sum": 13.885714285714286,
+        "flee_sum": -118.29237162896483,
+        "orbit_sum": -0.3307752345222923,
+        "probe_margin": 0.05
+      },
+      "code_dir": "I:\\Code\\Card-plus\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-18-08-44-21\\code_1\\candidates\\cand_1"
+    },
+    {
+      "slot": 2,
+      "attempt": 2,
+      "composite": 0.8631647416551035,
+      "metrics": {
+        "offline_rank": 0.9840881272949816,
+        "separation": 0.986117579320578,
+        "anti_hack": 0.6764617075742968,
+        "intra_scenario": 0.8866071428571429,
+        "composite": 0.8631647416551035,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.9363525091799265,
+        "return_std": 225.20503851011702,
+        "sep_scale": 78.82176347854096,
+        "mean_success": 561.248816434521,
+        "mean_collided": -458.4610991266285,
+        "mean_timeout": -211.16321248398728,
+        "sep_success_collided": 0.9999975924732278,
+        "gap_success_collided": 1019.7099155611495,
+        "sep_success_timeout": 0.9999445224490395,
+        "gap_success_timeout": 772.4120289185083,
+        "sep_timeout_collided": 0.9584106230394669,
+        "gap_timeout_collided": 247.2978866426412,
+        "intra_spearman_raw": 0.7732142857142859,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 25.208333333333332,
+        "progress_mean": 4.125000000000001,
+        "flee_mean": -10.350582517534423,
+        "orbit_mean": -0.028942833020700574,
+        "success_sum": 302.5,
+        "progress_sum": 49.500000000000014,
+        "flee_sum": -207.01165035068846,
+        "orbit_sum": -0.5788566604140115,
+        "probe_margin": 0.05
+      },
+      "code_dir": "I:\\Code\\Card-plus\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-18-08-44-21\\code_1\\candidates\\cand_2"
+    },
+    {
+      "slot": 3,
+      "attempt": 0,
+      "composite": 0.8458526979790107,
+      "metrics": {
+        "offline_rank": 0.9756025797947463,
+        "separation": 0.9611597148686576,
+        "anti_hack": 0.6887287756059866,
+        "intra_scenario": 0.8444196428571429,
+        "composite": 0.8458526979790107,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.9024103191789851,
+        "return_std": 71.72264657346294,
+        "sep_scale": 25.102926300712028,
+        "mean_success": 175.9899208074575,
+        "mean_collided": -153.13710502582677,
+        "mean_timeout": -102.27942809160379,
+        "sep_success_collided": 0.9999979773539279,
+        "gap_success_collided": 329.1270258332843,
+        "sep_success_timeout": 0.9999846616021995,
+        "gap_success_timeout": 278.2693488990613,
+        "sep_timeout_collided": 0.8834965056498457,
+        "gap_timeout_collided": 50.85767693422298,
+        "intra_spearman_raw": 0.6888392857142859,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 7.991666666666667,
+        "progress_mean": 1.167857142857143,
+        "flee_mean": -4.435963936086182,
+        "orbit_mean": -0.01240407129458596,
+        "success_sum": 95.9,
+        "progress_sum": 14.014285714285714,
+        "flee_sum": -88.71927872172364,
+        "orbit_sum": -0.24808142589171922,
+        "probe_margin": 0.05
+      },
+      "code_dir": "I:\\Code\\Card-plus\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-18-08-44-21\\code_1\\candidates\\cand_3"
+    },
+    {
+      "slot": 4,
+      "attempt": 3,
+      "composite": 0.8634465670027456,
+      "metrics": {
+        "offline_rank": 0.9902786931550701,
+        "separation": 0.9905343114468858,
+        "anti_hack": 0.6675726570343857,
+        "intra_scenario": 0.8899553571428572,
+        "composite": 0.8634465670027456,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.9611147726202806,
+        "return_std": 225.4790440955237,
+        "sep_scale": 78.91766543343329,
+        "mean_success": 552.4989855153036,
+        "mean_collided": -460.0574603271621,
+        "mean_timeout": -180.99703927198908,
+        "sep_success_collided": 0.999997322280327,
+        "gap_success_collided": 1012.5564458424658,
+        "sep_success_timeout": 0.9999080750890015,
+        "gap_success_timeout": 733.4960247872928,
+        "sep_timeout_collided": 0.9716975369713284,
+        "gap_timeout_collided": 279.06042105517304,
+        "intra_spearman_raw": 0.7799107142857145,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 24.583333333333332,
+        "progress_mean": 3.535714285714286,
+        "flee_mean": -8.871927872172364,
+        "orbit_mean": -0.02480814258917192,
+        "success_sum": 295.0,
+        "progress_sum": 42.42857142857143,
+        "flee_sum": -177.43855744344728,
+        "orbit_sum": -0.49616285178343844,
+        "probe_margin": 0.05
+      },
+      "code_dir": "I:\\Code\\Card-plus\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-18-08-44-21\\code_1\\candidates\\cand_4"
+    }
+  ],
+  "all_attempts": [
+    {
+      "slot": 0,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7375753805409738,
+      "reasons": [
+        "timeout/collided=0.1828 < 0.60",
+        "composite=0.7376 < 0.75",
+        "separation=0.6792 < 0.70"
+      ]
+    },
+    {
+      "slot": 0,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.8566262840606547,
+      "reasons": [
+        "anti_hack=0.6311 < 0.65"
+      ]
+    },
+    {
+      "slot": 0,
+      "attempt": 2,
+      "accepted": true,
+      "composite": 0.8582765984003972,
+      "reasons": []
+    },
+    {
+      "slot": 1,
+      "attempt": 0,
+      "accepted": true,
+      "composite": 0.8312078473331863,
+      "reasons": []
+    },
+    {
+      "slot": 2,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7377722214228333,
+      "reasons": [
+        "timeout/collided=0.1810 < 0.60",
+        "composite=0.7378 < 0.75",
+        "separation=0.6754 < 0.70"
+      ]
+    },
+    {
+      "slot": 2,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.8592308976993133,
+      "reasons": [
+        "anti_hack=0.6406 < 0.65"
+      ]
+    },
+    {
+      "slot": 2,
+      "attempt": 2,
+      "accepted": true,
+      "composite": 0.8631647416551035,
+      "reasons": []
+    },
+    {
+      "slot": 3,
+      "attempt": 0,
+      "accepted": true,
+      "composite": 0.8458526979790107,
+      "reasons": []
+    },
+    {
+      "slot": 4,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7470812884598087,
+      "reasons": [
+        "timeout/collided=0.2161 < 0.60",
+        "composite=0.7471 < 0.75"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.8582207105084654,
+      "reasons": [
+        "anti_hack=0.6369 < 0.65"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 2,
+      "accepted": false,
+      "composite": 0.8615620078222386,
+      "reasons": [
+        "anti_hack=0.6496 < 0.65"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 3,
+      "accepted": true,
+      "composite": 0.8634465670027456,
+      "reasons": []
+    }
+  ]
+}
