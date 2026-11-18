@@ -1,0 +1,2 @@
+C:\Users\Developer2\AppData\Local\Programs\Python\Python312\Lib\site-packages\gym\logger.py:30: UserWarning: WARN: Box bound precision lowered by casting to float32
+  warnings.warn(colorize('%s: %s'%('WARN', msg % args), 'yellow'))
