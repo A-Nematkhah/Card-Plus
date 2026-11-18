@@ -154,7 +154,13 @@ Write-Host "eval: mid_train every ${EvalFreq} steps x ${NEvalEpisodes}eps (SH); 
 function Invoke-Card([string[]]$arguments, [string]$name) {
     Write-Host ""
     Write-Host "======== $name $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ========"
-    & $py @arguments
+    Set-Location $here
+    $argv = @($arguments)
+    # Resolve first script arg to an absolute path under self_reflection/.
+    if ($argv.Count -ge 1 -and $argv[0] -notmatch '^-' -and $argv[0] -notmatch '[\\/]' -and $argv[0] -like '*.py') {
+        $argv[0] = Join-Path $here $argv[0]
+    }
+    & $py @argv
     if ($LASTEXITCODE -ne 0) {
         throw "$name failed with exit code $LASTEXITCODE"
     }
@@ -168,6 +174,8 @@ function Sync-Progress([string]$message) {
         & $syncPs1 -Message $message -LogPath $runLogPath
     } catch {
         Write-Host "WARNING: progress sync failed (training continues): $_"
+    } finally {
+        Set-Location $here
     }
 }
 
