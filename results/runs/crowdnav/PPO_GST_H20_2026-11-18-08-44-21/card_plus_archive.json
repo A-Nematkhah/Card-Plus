@@ -1,0 +1,39 @@
+{
+  "versions": [
+    {
+      "iteration": 1,
+      "reward_code": "\ndef compute_dense_reward(self, action: np.ndarray, obs: np.ndarray) -> Tuple[float, Dict[str, float]]:\n    prev_pos = self.pre_obs[0:2]\n    prev_goal = self.pre_obs[4:6]\n    prev_goal_dist = np.linalg.norm(prev_pos - prev_goal)\n    progress = prev_goal_dist - float(np.linalg.norm(obs[0:2] - obs[4:6]))\n\n    collision = obs[7] < 0.0\n    success = (float(np.linalg.norm(obs[0:2] - obs[4:6])) <= obs[6]) and (obs[7] >= 0.0)\n\n    reward_components: Dict[str, float] = {}\n    if collision:\n        total_reward = -200.0\n        reward_components['collision'] = -200.0\n    elif success:\n        total_reward = 200.0\n        reward_components['success'] = 200.0\n    else:\n        progress_reward = progress * 5.0\n        total_reward = progress_reward\n        reward_components['progress'] = progress_reward\n\n    return total_reward, reward_components\n",
+      "sub_reward_names": [
+        "progress",
+        "collision"
+      ],
+      "rl_ran": true,
+      "success_curve": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "version_score": 0.0,
+      "curve_auc": 0.0,
+      "mean_return": NaN,
+      "tpe_acc_v1": 1.0,
+      "tpe_pass_v1": true,
+      "rho_full": -0.22761732874380114,
+      "rho_dense": -0.22761732874380114,
+      "hacked": false,
+      "verdict": "fail_no_success_pool"
+    }
+  ],
+  "best_iteration": 1
+}
