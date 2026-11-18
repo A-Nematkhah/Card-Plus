@@ -374,7 +374,8 @@ class selfAttn_merge_SRNN(nn.Module):
         if not hasattr(self.args, 'sort_humans'):
             self.args.sort_humans = True
         if self.args.sort_humans:
-            detected_human_num = inputs['detected_human_num'].squeeze(-1).cpu().int()
+            # Keep on the same device as spatial_edges (CPU or CUDA); .cpu() broke CARD_DEVICE=cuda.
+            detected_human_num = inputs['detected_human_num'].squeeze(-1).to(dtype=torch.long)
         else:
             human_masks = reshapeT(inputs['visible_masks'], seq_length, nenv).float() # [seq_len, nenv, max_human_num]
             # if no human is detected (human_masks are all False, set the first human to True)

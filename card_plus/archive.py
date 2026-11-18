@@ -45,9 +45,11 @@ class VersionRecord:
     sub_reward_names: List[str] = field(default_factory=list)
     rl_ran: bool = False
     success_curve: List[float] = field(default_factory=list)
+    proxy_curve: List[float] = field(default_factory=list)
     version_score: Optional[float] = None
     curve_auc: Optional[float] = None
     mean_return: Optional[float] = None
+    mean_progress: Optional[float] = None
     tpe_acc_v1: Optional[float] = None
     tpe_pass_v1: Optional[bool] = None
     rho_full: Optional[float] = None
@@ -106,12 +108,15 @@ class RewardArchive:
             return None
 
         def key(v: VersionRecord) -> tuple:
-            # Prefer higher last-k success, then AUC, then mean return, then rho_full.
+            # Prefer higher last-k proxy/success, then AUC, then env progress, then return/rho.
+            mean_prog = v.mean_progress
+            mean_prog_key = float(mean_prog) if mean_prog is not None else float("-1e18")
             mean_ret = v.mean_return
             mean_ret_key = float(mean_ret) if mean_ret is not None else float("-1e18")
             return (
                 float(v.version_score or 0.0),
                 float(v.curve_auc or 0.0),
+                mean_prog_key,
                 mean_ret_key,
                 float(v.rho_full or 0.0),
             )
@@ -153,11 +158,14 @@ class RewardArchive:
         return rec.version_score if rec else None
 
     def _score_key(self, v: VersionRecord) -> tuple:
+        mean_prog = v.mean_progress
+        mean_prog_key = float(mean_prog) if mean_prog is not None else float("-1e18")
         mean_ret = v.mean_return
         mean_ret_key = float(mean_ret) if mean_ret is not None else float("-1e18")
         return (
             float(v.version_score or 0.0),
             float(v.curve_auc or 0.0),
+            mean_prog_key,
             mean_ret_key,
             float(v.rho_full or 0.0),
         )
@@ -227,29 +235,62 @@ class RewardArchive:
         self.versions = [VersionRecord.from_dict(v) for v in data.get("versions", [])]
 
 
+def _curve_from_eval_matrix(learning_result: Any, keys: Sequence[str]) -> List[float]:
+    """Average over episodes per eval row for the first present matrix key."""
+    if learning_result is None or not isinstance(learning_result, dict):
+        return []
+    for key in keys:
+        if key not in learning_result or learning_result[key] is None:
+            continue
+        arr = np.asarray(learning_result[key], dtype=np.float64)
+        if arr.size == 0:
+            return []
+        if arr.ndim == 2:
+            # NaN-pad allowed when mid-eval and final-eval episode counts differ.
+            return [float(np.nanmean(row)) for row in arr]
+        return [float(x) for x in arr.ravel()]
+    ev = learning_result.get("evaluations")
+    if isinstance(ev, dict):
+        for key in keys:
+            if key not in ev or ev[key] is None:
+                continue
+            arr = np.asarray(ev[key], dtype=np.float64)
+            if arr.size == 0:
+                return []
+            if arr.ndim == 2:
+                return [float(np.nanmean(row)) for row in arr]
+            return [float(x) for x in arr.ravel()]
+    return []
+
+
 def extract_success_curve(learning_result: Any) -> List[float]:
     """Best-effort extraction of eval success rates from train_and_eval payload.
 
     SB3 ``evaluations.npz`` stores ``successes`` as (n_evals, n_episodes); we
     average over episodes per eval to get a 1-D success-rate curve.
     """
-    if learning_result is None:
-        return []
-    if isinstance(learning_result, dict):
-        for key in ("successes", "success_rate", "eval_successes", "success_curve"):
-            if key in learning_result and learning_result[key] is not None:
-                arr = np.asarray(learning_result[key], dtype=np.float64)
-                if arr.ndim == 2:
-                    # NaN-pad allowed when mid-eval and final-eval episode counts differ.
-                    return [float(np.nanmean(row)) for row in arr]
-                return [float(x) for x in arr.ravel()]
-        ev = learning_result.get("evaluations")
-        if isinstance(ev, dict) and "successes" in ev:
-            arr = np.asarray(ev["successes"], dtype=np.float64)
-            if arr.ndim == 2:
-                return [float(np.nanmean(row)) for row in arr]
-            return [float(x) for x in arr.ravel()]
-    return []
+    return _curve_from_eval_matrix(
+        learning_result, ("successes", "success_rate", "eval_successes", "success_curve")
+    )
+
+
+def extract_proxy_curve(learning_result: Any) -> List[float]:
+    """Env-grounded proxy curve (progress/soft-near/survive; success→1).
+
+    Falls back to success curve when proxy metrics were not logged (legacy runs).
+    """
+    proxy = _curve_from_eval_matrix(learning_result, ("proxy_scores", "proxy_score"))
+    if proxy:
+        return proxy
+    return extract_success_curve(learning_result)
+
+
+def extract_mean_progress(learning_result: Any, last_k: int = 3) -> Optional[float]:
+    curve = _curve_from_eval_matrix(learning_result, ("goal_progress", "mean_progress"))
+    if not curve:
+        return None
+    k = max(1, int(last_k))
+    return float(np.mean(curve[-k:]))
 
 
 def extract_mean_return(learning_result: Any, last_k: int = 3) -> Optional[float]:

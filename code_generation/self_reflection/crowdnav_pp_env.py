@@ -40,6 +40,8 @@ class DualViewRewardWrapper(gym.Wrapper):
         self.use_ground_truth_reward = bool(use_ground_truth_reward)
         self.pre_obs: Optional[np.ndarray] = None
         self._elapsed_steps = 0
+        self._episode_d0 = 0.0
+        self._episode_d_best = 0.0
         sim_horizon = int(getattr(env, "time_limit", 50) / getattr(env, "time_step", 0.25))
         self._max_episode_steps = int(max_episode_steps) if max_episode_steps else sim_horizon
 
@@ -52,25 +54,51 @@ class DualViewRewardWrapper(gym.Wrapper):
     def _flat_from_sim(self) -> np.ndarray:
         return flatten_observation(self.env)
 
+    @staticmethod
+    def _goal_dist(flat: np.ndarray) -> float:
+        return float(np.hypot(float(flat[0] - flat[4]), float(flat[1] - flat[5])))
+
     def reset(self, **kwargs):
         self._elapsed_steps = 0
         ob = self.env.reset(**kwargs) if kwargs else self.env.reset()
         self.pre_obs = self._flat_from_sim()
+        self._episode_d0 = self._goal_dist(self.pre_obs)
+        self._episode_d_best = float(self._episode_d0)
         return ob
 
     def step(self, action):
+        from card_plus.progress import (
+            crowdnav_goal_progress_from_dists,
+            crowdnav_soft_near_goal,
+            episode_proxy_score,
+        )
+
         ob, rew, done, info = self.env.step(action)
         if not isinstance(info, dict):
             info = {"info": info}
         episode_info = info.get("info", info)
         success, collided, timeout = _episode_flags(episode_info)
         flat = self._flat_from_sim()
+        d_now = self._goal_dist(flat)
+        self._episode_d_best = min(float(self._episode_d_best), d_now)
+        progress = crowdnav_goal_progress_from_dists(
+            self._episode_d0, d_now, self._episode_d_best
+        )
+        soft_near = crowdnav_soft_near_goal(self._episode_d_best, radius=float(flat[6]))
         info["ground_truth_reward"] = float(rew)
         info["flat_obs"] = flat
         info["success"] = float(success)
         info["collided"] = float(collided)
         info["timeout"] = float(timeout)
         info["is_success"] = bool(success)
+        info["goal_progress"] = float(progress)
+        info["soft_near"] = float(soft_near)
+        info["proxy_score"] = episode_proxy_score(
+            success=float(success),
+            progress=float(progress),
+            collided=float(collided),
+            soft_near=float(soft_near),
+        )
         for key, value in extract_feedback_state_from_obs(flat).items():
             info[INFO_PREFIX + key] = value
             info[key] = value
@@ -193,6 +221,16 @@ class VecRestoreLLMReward:
         return getattr(self._inner, name)
 
 
+def _pp_env_id(config: SimpleNamespace) -> str:
+    """Match CrowdNav++ env id to predict_method."""
+    method = str(getattr(config.sim, "predict_method", "none"))
+    if method == "inferred":
+        return "CrowdSimPredRealGST-v0"
+    if method in ("const_vel", "truth"):
+        return "CrowdSimPred-v0"
+    return "CrowdSimVarNum-v0"
+
+
 def make_gst_base_env(
     config: SimpleNamespace,
     *,
@@ -202,7 +240,7 @@ def make_gst_base_env(
 ) -> gym.Env:
     _ensure_crowdnav_path()
     import crowd_sim  # noqa: F401  # registers env ids
-    env = gym.make("CrowdSimPredRealGST-v0")
+    env = gym.make(_pp_env_id(config))
     # gym>=0.21 wraps with OrderEnforcing; CrowdNav attrs must land on the inner sim.
     core = env.unwrapped if hasattr(env, "unwrapped") else env
     core.configure(config)
@@ -228,11 +266,11 @@ def make_dual_view_env(
     env_config: Optional[Dict[str, Any]] = None,
     ensure_gst: bool = True,
 ) -> DualViewRewardWrapper:
-    if ensure_gst:
-        cfg_probe = build_config(task_name, env_config, stack="crowdnav_pp")
-        with_random = bool(cfg_probe.env.randomize_attributes)
-        ensure_gst_checkpoint(randomized=with_random, download=True)
     config = build_config(task_name, env_config, stack="crowdnav_pp")
+    use_gst = str(config.sim.predict_method) == "inferred"
+    if ensure_gst and use_gst:
+        with_random = bool(config.env.randomize_attributes)
+        ensure_gst_checkpoint(randomized=with_random, download=True)
     # Align with make_pp_vec_env device policy (CARD_DEVICE / auto=CPU).
     pref = str(os.environ.get("CARD_DEVICE", "auto")).strip().lower()
     use_cuda = pref == "cuda" and torch.cuda.is_available()
@@ -261,14 +299,16 @@ def make_pp_vec_env(
     device: Optional[torch.device] = None,
     restore_llm_reward: bool = True,
 ):
-    """Single-process DummyVecEnv + VecPyTorch + GST + optional LLM reward restore."""
+    """Single-process DummyVecEnv + VecPyTorch + optional GST + LLM reward restore."""
     _ensure_crowdnav_path()
     # GST / crowd_sim imports resolve relative to CrowdNav root for some assets.
     os.chdir(CROWDNAV_ROOT)
 
     config = build_config(task_name, env_config, stack="crowdnav_pp")
-    with_random = bool(config.env.randomize_attributes)
-    ensure_gst_checkpoint(randomized=with_random, download=True)
+    use_gst = str(config.sim.predict_method) == "inferred" and bool(config.env.use_wrapper)
+    if use_gst:
+        with_random = bool(config.env.randomize_attributes)
+        ensure_gst_checkpoint(randomized=with_random, download=True)
     if device is None:
         # CARD_DEVICE=cpu|cuda|auto  (bench on RTX 3050 Laptop: CPU+4 threads was fastest)
         pref = str(os.environ.get("CARD_DEVICE", "auto")).strip().lower()
@@ -297,13 +337,17 @@ def make_pp_vec_env(
         )
 
     from rl.vec_env.dummy_vec_env import DummyVecEnv  # type: ignore
-    from rl.vec_env.vec_pretext_normalize import VecPretextNormalize  # type: ignore
 
     VecPyTorchCls = _make_vec_pytorch_cls()
     envs = DummyVecEnv([_thunk])
-    # DummyVecEnv.talk2Env expects env.env; DualView is a Wrapper so .env is GST.
+    # DummyVecEnv.talk2Env expects env.env; DualView is a Wrapper so .env is the sim.
     envs = VecPyTorchCls(envs, device)
-    envs = VecPretextNormalize(envs, gamma=float(config.reward.gamma), ob=False, ret=False, config=config, test=True)
+    if use_gst:
+        from rl.vec_env.vec_pretext_normalize import VecPretextNormalize  # type: ignore
+
+        envs = VecPretextNormalize(
+            envs, gamma=float(config.reward.gamma), ob=False, ret=False, config=config, test=True
+        )
     if restore_llm_reward and (not use_ground_truth_reward):
         envs = VecRestoreLLMReward(envs, enabled=True)._inner
     return envs, config, device

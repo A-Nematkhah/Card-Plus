@@ -221,10 +221,16 @@ class PolicyPredictAdapter:
 
 
 def _eval_episodes(actor_critic, envs, device, algo_args, n_episodes: int) -> Dict[str, np.ndarray]:
+    from card_plus.progress import episode_proxy_score
+
     adapter = PolicyPredictAdapter(actor_critic, device, algo_args)
     returns = []
     lengths = []
     successes = []
+    progresses = []
+    collideds = []
+    soft_nears = []
+    proxy_scores = []
     for _ in range(int(n_episodes)):
         adapter.reset_hidden()
         obs = envs.reset()
@@ -232,6 +238,10 @@ def _eval_episodes(actor_critic, envs, device, algo_args, n_episodes: int) -> Di
         ep_ret = 0.0
         ep_len = 0
         success = 0.0
+        progress = 0.0
+        collided = 0.0
+        soft_near = 0.0
+        proxy = 0.0
         while not done:
             action, _ = adapter.predict(obs, deterministic=True)
             # Vec env expects batched actions.
@@ -249,13 +259,33 @@ def _eval_episodes(actor_critic, envs, device, algo_args, n_episodes: int) -> Di
             info0 = infos[0] if isinstance(infos, (list, tuple)) else infos
             if isinstance(info0, dict):
                 success = float(info0.get("success", info0.get("is_success", 0.0)) or 0.0)
+                collided = float(info0.get("collided", 0.0) or 0.0)
+                progress = float(info0.get("goal_progress", progress) or 0.0)
+                soft_near = float(info0.get("soft_near", soft_near) or 0.0)
+                if "proxy_score" in info0:
+                    proxy = float(info0.get("proxy_score") or 0.0)
+                else:
+                    proxy = episode_proxy_score(
+                        success=success,
+                        progress=progress,
+                        collided=collided,
+                        soft_near=soft_near,
+                    )
         returns.append(ep_ret)
         lengths.append(ep_len)
         successes.append(success)
+        progresses.append(progress)
+        collideds.append(collided)
+        soft_nears.append(soft_near)
+        proxy_scores.append(proxy)
     return {
         "results": np.asarray(returns, dtype=np.float64).reshape(1, -1),
         "ep_lengths": np.asarray(lengths, dtype=np.float64).reshape(1, -1),
         "successes": np.asarray(successes, dtype=np.float64).reshape(1, -1),
+        "goal_progress": np.asarray(progresses, dtype=np.float64).reshape(1, -1),
+        "collided": np.asarray(collideds, dtype=np.float64).reshape(1, -1),
+        "soft_near": np.asarray(soft_nears, dtype=np.float64).reshape(1, -1),
+        "proxy_scores": np.asarray(proxy_scores, dtype=np.float64).reshape(1, -1),
     }
 
 
@@ -363,6 +393,10 @@ def train_ppo(
         results_log = []
         lengths_log = []
         successes_log = []
+        progress_log = []
+        collided_log = []
+        soft_near_log = []
+        proxy_log = []
         episode_rewards = deque(maxlen=100)
 
         num_updates = max(1, int(algo_args.num_env_steps) // algo_args.num_steps // algo_args.num_processes)
@@ -443,6 +477,10 @@ def train_ppo(
                 results_log.append(metrics["results"].reshape(-1))
                 lengths_log.append(metrics["ep_lengths"].reshape(-1))
                 successes_log.append(metrics["successes"].reshape(-1))
+                progress_log.append(metrics["goal_progress"].reshape(-1))
+                collided_log.append(metrics["collided"].reshape(-1))
+                soft_near_log.append(metrics["soft_near"].reshape(-1))
+                proxy_log.append(metrics["proxy_scores"].reshape(-1))
                 atomic_torch_save(
                     actor_critic.state_dict(),
                     ckpt_path,
@@ -451,7 +489,9 @@ def train_ppo(
                 )
                 print(
                     f"[mid-eval] steps={total_num_steps} episodes={n_eval_episodes} "
-                    f"success_rate={float(np.mean(metrics['successes'])):.3f}",
+                    f"success_rate={float(np.mean(metrics['successes'])):.3f} "
+                    f"proxy={float(np.mean(metrics['proxy_scores'])):.3f} "
+                    f"progress={float(np.mean(metrics['goal_progress'])):.3f}",
                     flush=True,
                 )
 
@@ -470,10 +510,16 @@ def train_ppo(
             results_log.append(metrics["results"].reshape(-1))
             lengths_log.append(metrics["ep_lengths"].reshape(-1))
             successes_log.append(metrics["successes"].reshape(-1))
+            progress_log.append(metrics["goal_progress"].reshape(-1))
+            collided_log.append(metrics["collided"].reshape(-1))
+            soft_near_log.append(metrics["soft_near"].reshape(-1))
+            proxy_log.append(metrics["proxy_scores"].reshape(-1))
             sr = float(np.mean(metrics["successes"]))
             print(
                 f"[final-eval] steps={total_num_steps} episodes={end_eps} "
-                f"success_rate={sr:.3f}",
+                f"success_rate={sr:.3f} "
+                f"proxy={float(np.mean(metrics['proxy_scores'])):.3f} "
+                f"progress={float(np.mean(metrics['goal_progress'])):.3f}",
                 flush=True,
             )
 
@@ -500,6 +546,10 @@ def train_ppo(
             "results": _stack(results_log),
             "ep_lengths": _stack(lengths_log),
             "successes": _stack(successes_log),
+            "goal_progress": _stack(progress_log),
+            "collided": _stack(collided_log),
+            "soft_near": _stack(soft_near_log),
+            "proxy_scores": _stack(proxy_log),
         }
         np.savez(os.path.join(eval_dir, "evaluations.npz"), **learning_result)
         # Also write a compact summary for the end-of-short eval.
@@ -509,6 +559,10 @@ def train_ppo(
                 "success_rate": float(np.mean(successes_log[-1])),
                 "mean_return": float(np.mean(results_log[-1])),
                 "mean_length": float(np.mean(lengths_log[-1])),
+                "mean_progress": float(np.nanmean(progress_log[-1])),
+                "collision_rate": float(np.nanmean(collided_log[-1])),
+                "soft_near_rate": float(np.nanmean(soft_near_log[-1])),
+                "proxy_score": float(np.nanmean(proxy_log[-1])),
                 "timesteps": int(timesteps_log[-1]),
             }
             with open(os.path.join(eval_dir, "final_eval.json"), "w", encoding="utf-8") as f:

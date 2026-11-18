@@ -17,7 +17,9 @@ import numpy as np
 from card_plus.archive import (
     RewardArchive,
     VersionRecord,
+    extract_mean_progress,
     extract_mean_return,
+    extract_proxy_curve,
     extract_success_curve,
     score_from_curve,
     success_curve_auc,
@@ -185,11 +187,17 @@ def update_archive_after_version(
 
     Returns (record, rolled_back, rollback_notice_or_empty, restored_best_code_or_none).
     """
-    curve = extract_success_curve(learning_result) if rl_ran else []
-    score = score_from_curve(curve, cfg.score_last_k_evals) if rl_ran else None
-    auc = success_curve_auc(curve) if rl_ran and curve else None
+    success_curve = extract_success_curve(learning_result) if rl_ran else []
+    proxy_curve = extract_proxy_curve(learning_result) if rl_ran else []
+    # Prefer env-grounded proxy (progress/soft-near/survive) so zero-success shorts still rank.
+    score_curve = proxy_curve if proxy_curve else success_curve
+    score = score_from_curve(score_curve, cfg.score_last_k_evals) if rl_ran else None
+    auc = success_curve_auc(score_curve) if rl_ran and score_curve else None
     mean_ret = (
         extract_mean_return(learning_result, last_k=cfg.score_last_k_evals) if rl_ran else None
+    )
+    mean_prog = (
+        extract_mean_progress(learning_result, last_k=cfg.score_last_k_evals) if rl_ran else None
     )
 
     # Decide rollback against previous best BEFORE adding current (if current is bad)
@@ -213,10 +221,12 @@ def update_archive_after_version(
                 reward_code=reward_code,
                 sub_reward_names=sub_reward_names or [],
                 rl_ran=True,
-                success_curve=curve,
+                success_curve=success_curve,
+                proxy_curve=proxy_curve,
                 version_score=score,
                 curve_auc=auc,
                 mean_return=mean_ret,
+                mean_progress=mean_prog,
             )
             notice = archive.format_rollback_notice(failed_preview, best)
 
@@ -225,10 +235,12 @@ def update_archive_after_version(
         reward_code=reward_code,
         sub_reward_names=list(sub_reward_names or []),
         rl_ran=rl_ran,
-        success_curve=curve,
+        success_curve=success_curve,
+        proxy_curve=proxy_curve,
         version_score=score,
         curve_auc=auc,
         mean_return=mean_ret,
+        mean_progress=mean_prog,
         tpe_acc_v1=acc_v1,
         tpe_pass_v1=pass_v1,
         rho_full=tpe_v2.rho_full if tpe_v2 else None,
@@ -334,12 +346,16 @@ def maybe_score_final_version(
     logger.info(cost_msg)
     print(cost_msg)
     learning_result = train_fn(last.reward_code)
-    curve = extract_success_curve(learning_result)
+    success_curve = extract_success_curve(learning_result)
+    proxy_curve = extract_proxy_curve(learning_result)
+    score_curve = proxy_curve if proxy_curve else success_curve
     last.rl_ran = True
-    last.success_curve = curve
-    last.version_score = score_from_curve(curve, cfg.score_last_k_evals)
-    last.curve_auc = success_curve_auc(curve) if curve else None
+    last.success_curve = success_curve
+    last.proxy_curve = proxy_curve
+    last.version_score = score_from_curve(score_curve, cfg.score_last_k_evals)
+    last.curve_auc = success_curve_auc(score_curve) if score_curve else None
     last.mean_return = extract_mean_return(learning_result, last_k=cfg.score_last_k_evals)
+    last.mean_progress = extract_mean_progress(learning_result, last_k=cfg.score_last_k_evals)
     archive.add(last)
     _persist_best_code(archive)
     return last
@@ -451,17 +467,27 @@ def apply_card_plus_after_baseline(
                 )
     else:
         # Read-only resume: synthesize a lightweight record for logging/enrichment.
-        curve = extract_success_curve(learning_result) if rl_ran else []
+        success_curve = extract_success_curve(learning_result) if rl_ran else []
+        proxy_curve = extract_proxy_curve(learning_result) if rl_ran else []
+        score_curve = proxy_curve if proxy_curve else success_curve
         record = VersionRecord(
             iteration=iteration,
             reward_code=reward_code,
             sub_reward_names=sub_reward_names_from_trajs(trajs),
             rl_ran=rl_ran,
-            success_curve=curve,
-            version_score=score_from_curve(curve, cfg.score_last_k_evals) if rl_ran else None,
-            curve_auc=success_curve_auc(curve) if rl_ran and curve else None,
+            success_curve=success_curve,
+            proxy_curve=proxy_curve,
+            version_score=(
+                score_from_curve(score_curve, cfg.score_last_k_evals) if rl_ran else None
+            ),
+            curve_auc=success_curve_auc(score_curve) if rl_ran and score_curve else None,
             mean_return=(
                 extract_mean_return(learning_result, last_k=cfg.score_last_k_evals)
+                if rl_ran
+                else None
+            ),
+            mean_progress=(
+                extract_mean_progress(learning_result, last_k=cfg.score_last_k_evals)
                 if rl_ran
                 else None
             ),

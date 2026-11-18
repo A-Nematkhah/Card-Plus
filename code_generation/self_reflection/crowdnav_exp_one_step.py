@@ -66,13 +66,18 @@ def env_is_valid(reward_code_str, args):
     if not static_ok:
         return False, "static reward check failed: " + "; ".join(static_reasons)
     try:
+        from code_generation.self_reflection.utils import ensure_crowdnav_method_signature
+
+        method_code = reward_code_str
+        if getattr(args, "benchmark_name", "") == "crowdnav":
+            method_code = ensure_crowdnav_method_signature(reward_code_str)
         train_env = make_env(
             args,
             seed=args.seed,
             max_episode_steps=args.max_episode_steps,
             is_eval=False,
             use_ground_truth_reward=False,
-            reward_code=reward_code_str,
+            reward_code=method_code,
         )()
         eval_env = make_env(
             args,
@@ -80,20 +85,26 @@ def env_is_valid(reward_code_str, args):
             record_dir="logs/videos",
             is_eval=True,
             use_ground_truth_reward=False,
-            reward_code=reward_code_str,
+            reward_code=method_code,
         )()
-        external_reward_code = convert_function_external(reward_code_str, benchmark_name=args.benchmark_name)
+        external_reward_code = convert_function_external(
+            method_code, benchmark_name=args.benchmark_name
+        )
         for env in (train_env, eval_env):
             obs = env.reset()
             action = env.action_space.sample()
-            load_reward_function(code=reward_code_str)
+            load_reward_function(code=method_code)
             obs, reward, done, info = env.step(action)
             assert isinstance(reward, (float, np.floating)), "reward is not float type"
 
-            load_reward_function(code=external_reward_code)
-            external_reward_func = ContinuousTaskWrapper.compute_dense_reward
-            # CrowdNav external form uses pre_obs (former self.pre_obs) for delta progress.
-            result = external_reward_func(action=action, obs=obs, pre_obs=obs)
+            # Call external form directly (do not patch a no-self fn as a method).
+            ns = {"np": np, "Dict": Dict, "Tuple": Tuple}
+            exec(external_reward_code, ns)
+            external_reward_func = ns["compute_dense_reward"]
+            if getattr(args, "benchmark_name", "") == "crowdnav":
+                result = external_reward_func(action=action, obs=obs, pre_obs=obs)
+            else:
+                result = external_reward_func(action=action, obs=obs)
             assert isinstance(result, tuple), "external_reward_func return type is not tuple"
     except Exception:
         return False, traceback.format_exc()
@@ -169,7 +180,8 @@ def train_and_eval(
     ckpt_path = os.path.join(train_log_path, "latest_model.pt")
 
     print_with_color(
-        "CrowdNav train backend: PPO + selfAttn_merge_srnn + GST (CrowdSimPredRealGST-v0)",
+        "CrowdNav train backend: PPO + selfAttn_merge_srnn "
+        f"(GST={'on' if os.environ.get('CARD_GST', '0').strip().lower() in ('1', 'true', 'yes', 'on') else 'off/const_vel'})",
         "BLUE",
     )
 

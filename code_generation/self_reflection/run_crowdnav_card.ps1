@@ -78,7 +78,8 @@ if (-not $env:CARD_DEVICE) { $env:CARD_DEVICE = "cpu" }
 
 Write-Host "REPO=$repo"
 Write-Host "PYTHON=$py"
-Write-Host "Stack: CrowdNav++ GST + PPO/selfAttn SRNN | env H=20 robot_visible=False"
+$gstFlag = if ($env:CARD_GST -and $env:CARD_GST -match '^(1|true|yes|on)$') { "GST=on(inferred)" } else { "GST=off(const_vel)" }
+Write-Host "Stack: CrowdNav++ PPO/selfAttn SRNN + $gstFlag | env H=20 robot_visible=False"
 Write-Host "Device: CARD_DEVICE=$($env:CARD_DEVICE) torch_threads=4"
 Write-Host "Features: CardPlus/SH=$CardPlus DatasetGate=$(-not $NoDatasetRescore) Finalists=$(-not $NoFinalists)"
 
@@ -152,15 +153,16 @@ Write-Host "LEAN budget: short=${TrainRounds}x${TrainMaxSteps}=$approxShort; fin
 Write-Host "eval: mid_train every ${EvalFreq} steps x ${NEvalEpisodes}eps (SH); end_of_short=${FinalEvalEpisodes}eps; llm_cand=$LlmCandidates; NoFinalists=$NoFinalists"
 
 function Invoke-Card([string[]]$arguments, [string]$name) {
-    Write-Host ""
-    Write-Host "======== $name $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ========"
+    # sync_crowdnav_progress.ps1 Set-Locations to repo root; always restore before python.
     Set-Location $here
-    $argv = @($arguments)
-    # Resolve first script arg to an absolute path under self_reflection/.
-    if ($argv.Count -ge 1 -and $argv[0] -notmatch '^-' -and $argv[0] -notmatch '[\\/]' -and $argv[0] -like '*.py') {
+    $argv = [System.Collections.Generic.List[string]]::new()
+    foreach ($a in $arguments) { [void]$argv.Add([string]$a) }
+    if ($argv.Count -gt 0 -and $argv[0] -like "*.py" -and -not [System.IO.Path]::IsPathRooted($argv[0])) {
         $argv[0] = Join-Path $here $argv[0]
     }
-    & $py @argv
+    Write-Host ""
+    Write-Host "======== $name $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ========"
+    & $py @($argv.ToArray())
     if ($LASTEXITCODE -ne 0) {
         throw "$name failed with exit code $LASTEXITCODE"
     }
@@ -216,8 +218,12 @@ for ($k = 1; $k -le $TrainRounds; $k++) {
         $qPath = Join-Path $runLogPath "rl_query_code_$queryStep.pkl"
         if (-not (Test-Path -LiteralPath $qPath)) { throw "Missing $qPath" }
         $respPath = Join-Path $runLogPath "llm_response_code_$queryStep.pkl"
+        $codePath = Join-Path $runLogPath "code_$queryStep\specific_$queryStep.py"
         if (Test-Path -LiteralPath $respPath) {
             Write-Host "Found $respPath -> skip query$queryStep"
+        } elseif (Test-Path -LiteralPath $codePath) {
+            # Winner code already saved (e.g. crash after save_code); skip costly LLM redo.
+            Write-Host "Found $codePath -> skip query$queryStep (reward already generated)"
         } else {
             Invoke-Card @("query_llm_crowdnav.py", "--rl_question_file_path", $qPath) "query$queryStep"
             Sync-Progress "crowdnav card query$queryStep"

@@ -33,10 +33,11 @@ def test_robot_visible_matches_evonav_instruction():
     cfg = build_config("circle-crossing-v0")
     assert cfg.robot.visible is False
     assert cfg.sim.human_num == 20
-    # Default stack remains flat; crowdnav_pp enables GST separately.
+    # Default stack remains flat; crowdnav_pp keeps selfAttn (GST off by default).
     assert cfg.sim.predict_method == "none"
     pp = build_config("circle-crossing-v0", stack="crowdnav_pp")
-    assert pp.sim.predict_method == "inferred"
+    assert pp.sim.predict_method == "const_vel"
+    assert pp.env.use_wrapper is False
     assert pp.robot.policy == "selfAttn_merge_srnn"
 
 

@@ -18,6 +18,71 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from code_generation.self_reflection.crowdnav_pp_env import make_dual_view_env
 from code_generation.self_reflection.crowdnav_ppo_train import load_policy_adapter
 
+# Persistent matplotlib canvas for fallback RGB frames (GST native render is flaky on Agg).
+_FIG = None
+_AX = None
+
+
+def _unwrap_sim(env):
+    cur = env
+    seen = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if hasattr(cur, "robot") and hasattr(cur, "humans"):
+            return cur
+        cur = getattr(cur, "env", None) or getattr(cur, "unwrapped", None)
+        if cur is env:
+            break
+    return getattr(env, "unwrapped", env)
+
+
+def _render_frame(env):
+    """Matplotlib top-down frame from sim state (GST native render needs UI axis)."""
+    global _FIG, _AX
+    import matplotlib.pyplot as plt
+    from matplotlib import patches
+
+    sim = _unwrap_sim(env)
+    robot = getattr(sim, "robot", None)
+    humans = list(getattr(sim, "humans", []) or [])
+    if robot is None:
+        return None
+    if _FIG is None or _AX is None:
+        _FIG, _AX = plt.subplots(figsize=(5, 5))
+    ax = _AX
+    ax.clear()
+    arena = 7.0
+    try:
+        arena = float(sim.config.sim.arena_size) + 1.0
+    except Exception:  # noqa: BLE001
+        pass
+    ax.set_xlim(-arena, arena)
+    ax.set_ylim(-arena, arena)
+    ax.set_aspect("equal")
+    ax.set_title("circle-crossing-v0 (H=20)")
+    pos = robot.get_position()
+    ax.add_patch(plt.Circle((pos[0], pos[1]), float(robot.radius), color="gold", zorder=3))
+    ax.plot([robot.gx], [robot.gy], marker="*", color="red", markersize=12)
+    for human in humans:
+        ax.add_patch(plt.Circle((human.px, human.py), float(human.radius), color="blue", alpha=0.55))
+        ax.add_patch(
+            patches.FancyArrowPatch(
+                (human.px, human.py),
+                (human.px + human.vx * 0.3, human.py + human.vy * 0.3),
+                color="navy",
+                arrowstyle="->",
+                mutation_scale=8,
+            )
+        )
+    _FIG.canvas.draw()
+    canvas = _FIG.canvas
+    w, h = canvas.get_width_height()
+    if hasattr(canvas, "buffer_rgba"):
+        buf = np.asarray(canvas.buffer_rgba(), dtype=np.uint8)
+        return np.ascontiguousarray(buf[:, :, :3])
+    buf = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
+    return buf.reshape(h, w, 3)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -75,16 +140,7 @@ def main() -> None:
             del reward
             success = float(info.get("success", info.get("is_success", 0.0)) or 0.0)
             if step % args.every_n == 0:
-                # Dual-view wraps GST env; render via unwrapped if needed.
-                render_env = env
-                while hasattr(render_env, "env") and not hasattr(render_env, "render"):
-                    render_env = render_env.env
-                frame = None
-                if hasattr(env, "env") and hasattr(env.env, "render"):
-                    try:
-                        frame = env.env.render("rgb_array")
-                    except Exception:  # noqa: BLE001
-                        frame = None
+                frame = _render_frame(env)
                 if frame is not None:
                     ep_frames.append(np.asarray(frame, dtype=np.uint8))
             step += 1

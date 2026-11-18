@@ -450,6 +450,23 @@ def get_eval_feedback(trajectory_list: list, mapping_dicts, log_interval=100, be
     print(eval_feedback)
     return eval_feedback
 
+def ensure_crowdnav_method_signature(reward_function_code: str) -> str:
+    """Make ``compute_dense_reward`` a bound-method style ``(self, ...)`` if needed.
+
+    Soft LLM prompts sometimes omit ``self``; patching that function onto
+    ContinuousTaskWrapper / DualViewRewardWrapper then shifts ``action``/``obs``
+    and crashes with broadcast errors like shapes (2,) (0,).
+    """
+    if re.search(r"def\s+compute_dense_reward\s*\(\s*self\b", reward_function_code):
+        return reward_function_code
+    return re.sub(
+        r"def\s+compute_dense_reward\s*\(",
+        "def compute_dense_reward(self, ",
+        reward_function_code,
+        count=1,
+    )
+
+
 def convert_function_external(reward_function_code: str, benchmark_name="metaworld"):
     if benchmark_name == "metaworld":
         reward_function_code = re.sub(r'def compute_dense_reward\(self, ', 'def compute_dense_reward(', reward_function_code)
@@ -460,30 +477,37 @@ def convert_function_external(reward_function_code: str, benchmark_name="metawor
         reward_function_code = re.sub(r'def compute_dense_reward\(self, ', 'def compute_dense_reward(', reward_function_code)
         return reward_function_code
     elif benchmark_name == "crowdnav":
-        # Drop bound-method ``self``; expose previous obs as ``pre_obs`` for delta progress.
+        # Drop bound-method ``self`` (allow newline after '('); expose ``pre_obs``.
         reward_function_code = re.sub(
-            r'def compute_dense_reward\(self,\s*',
-            'def compute_dense_reward(',
+            r"def\s+compute_dense_reward\s*\(\s*self\s*,\s*",
+            "def compute_dense_reward(",
             reward_function_code,
+            count=1,
         )
-        if re.search(r'def compute_dense_reward\([^)]*\bpre_obs\b', reward_function_code) is None:
+        reward_function_code = re.sub(
+            r"def\s+compute_dense_reward\s*\(\s*self\s*\)",
+            "def compute_dense_reward()",
+            reward_function_code,
+            count=1,
+        )
+        if re.search(r"def\s+compute_dense_reward\s*\([^)]*\bpre_obs\b", reward_function_code) is None:
             reward_function_code = re.sub(
-                r'(def compute_dense_reward\([^)]*?)(\)\s*(?:->[^:]+)?:)',
-                r'\1, pre_obs=None\2',
+                r"(def\s+compute_dense_reward\s*\([^)]*?)(\)\s*(?:->[^:]+)?:)",
+                r"\1, pre_obs=None\2",
                 reward_function_code,
                 count=1,
             )
         reward_function_code = re.sub(
-            r'getattr\(\s*self\s*,\s*[\'"]pre_obs[\'"]\s*(?:,\s*None)?\s*\)',
-            'pre_obs',
+            r"getattr\(\s*self\s*,\s*[\'\"]pre_obs[\'\"]\s*(?:,\s*None)?\s*\)",
+            "pre_obs",
             reward_function_code,
         )
-        reward_function_code = reward_function_code.replace('self.pre_obs', 'pre_obs')
+        reward_function_code = reward_function_code.replace("self.pre_obs", "pre_obs")
         # First-step / missing pre_obs must not crash offline TPE / return-check.
         if "if pre_obs is None:" not in reward_function_code:
             reward_function_code = re.sub(
-                r'(def compute_dense_reward\([^)]*\)\s*(?:->[^:]+)?:\s*\n)',
-                r'\1    if pre_obs is None:\n        pre_obs = obs\n',
+                r"(def\s+compute_dense_reward\s*\([^)]*\)\s*(?:->[^:]+)?:\s*\n)",
+                r"\1    if pre_obs is None:\n        pre_obs = obs\n",
                 reward_function_code,
                 count=1,
             )

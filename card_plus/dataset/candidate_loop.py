@@ -223,12 +223,11 @@ def select_best_reward_candidates(
         for r in accepted:
             slot_dir = cand_root / f"cand_{r.slot}"
             slot_dir.mkdir(parents=True, exist_ok=True)
-            (slot_dir / "specific.py").write_text(
-                r.specific_code, encoding="utf-8", newline="\n"
-            )
-            (slot_dir / "general.py").write_text(
-                r.general_code, encoding="utf-8", newline="\n"
-            )
+            # Path.write_text(..., newline=) needs Python 3.10+; card env is 3.8.
+            with (slot_dir / "specific.py").open("w", encoding="utf-8", newline="\n") as f:
+                f.write(r.specific_code)
+            with (slot_dir / "general.py").open("w", encoding="utf-8", newline="\n") as f:
+                f.write(r.general_code)
             meta = {
                 "slot": r.slot,
                 "attempt": r.attempt,

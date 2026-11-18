@@ -132,7 +132,8 @@ def build_config(
 
     ``stack``:
       - ``flat``: CARD legacy Box-obs path (no GST wrapper).
-      - ``crowdnav_pp``: CrowdNav++ / EvoNav (GST inferred + selfAttn SRNN).
+      - ``crowdnav_pp``: CrowdNav++ / EvoNav selfAttn SRNN; GST neural predictor
+        defaults OFF (``const_vel``). Set ``CARD_GST=1`` for ``inferred`` + GST wrapper.
     """
     if task_name not in CROWDNAV_TASKS:
         raise KeyError(f"Unknown CrowdNav task: {task_name}")
@@ -153,10 +154,23 @@ def build_config(
     if use_pp:
         from code_generation.self_reflection.crowdnav_gst import gst_model_dir
 
-        predict_method = "inferred"
-        use_wrapper = True
+        # Neural GST is optional; keep selfAttn_merge_srnn either way.
+        use_gst = os.environ.get("CARD_GST", "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if use_gst:
+            predict_method = "inferred"
+            use_wrapper = True
+            pred_model_dir = gst_model_dir(randomized=with_random)
+        else:
+            # Constant-velocity future traj (same edge layout as GST, no neural GST).
+            predict_method = "const_vel"
+            use_wrapper = False
+            pred_model_dir = ""
         robot_policy = "selfAttn_merge_srnn"
-        pred_model_dir = gst_model_dir(randomized=with_random)
         device = "cuda"
     else:
         predict_method = "none"
@@ -613,6 +627,9 @@ class SuccessInfoWrapper(gym.Wrapper):
 
 def load_reward_function(code: str) -> None:
     """Patch reward wrappers in *this* process (must run inside each Subproc worker)."""
+    from code_generation.self_reflection.utils import ensure_crowdnav_method_signature
+
+    code = ensure_crowdnav_method_signature(code)
     namespace = {**globals(), "np": np, "Dict": Dict, "Tuple": Tuple}
     exec(code, namespace)
     fn = namespace["compute_dense_reward"]

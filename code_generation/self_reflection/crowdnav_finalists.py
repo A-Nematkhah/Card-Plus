@@ -28,8 +28,9 @@ LOW_SCORE_SPREAD = 0.05
 
 
 def _peak_success(v: VersionRecord) -> float:
-    if v.success_curve:
-        return float(max(v.success_curve))
+    curve = v.proxy_curve or v.success_curve
+    if curve:
+        return float(max(curve))
     return float(v.version_score or 0.0)
 
 
@@ -41,8 +42,8 @@ def select_top_versions(
 ) -> List[VersionRecord]:
     """Keep top-K RL-ran versions.
 
-    If ``version_score`` spread is tiny (hard envs), rank by peak then AUC.
-    Otherwise rank by ``max(score, peak)``, then peak, then AUC.
+    If ``version_score`` spread is tiny (hard envs), rank by peak then AUC /
+    env progress. Otherwise rank by ``max(score, peak)``, then peak, then progress.
     """
     scored = [v for v in versions if v.rl_ran and v.reward_code.strip()]
     if not scored:
@@ -51,14 +52,15 @@ def select_top_versions(
     spread = max(scores) - min(scores) if scores else 0.0
     low_var = spread < float(low_spread)
 
-    def key(v: VersionRecord) -> Tuple[float, float, float, float, float, int]:
+    def key(v: VersionRecord) -> Tuple[float, float, float, float, float, float, int]:
         score = float(v.version_score or 0.0)
         peak = _peak_success(v)
         auc = float(v.curve_auc or 0.0)
+        mean_prog = float(v.mean_progress) if v.mean_progress is not None else float("-1e18")
         mean_ret = float(v.mean_return) if v.mean_return is not None else float("-1e18")
         if low_var:
-            return (peak, auc, mean_ret, score, max(score, peak), -int(v.iteration))
-        return (max(score, peak), peak, mean_ret, auc, score, -int(v.iteration))
+            return (peak, auc, mean_prog, mean_ret, score, max(score, peak), -int(v.iteration))
+        return (max(score, peak), peak, mean_prog, mean_ret, auc, score, -int(v.iteration))
 
     ranked = sorted(scored, key=key, reverse=True)
     k = max(1, int(top_k))
@@ -249,7 +251,8 @@ def main() -> None:
         code_dir = out_root / f"iter_{v.iteration}"
         code_dir.mkdir(parents=True, exist_ok=True)
         specific_path = code_dir / "specific.py"
-        specific_path.write_text(v.reward_code, encoding="utf-8", newline="\n")
+        with specific_path.open("w", encoding="utf-8", newline="\n") as f:
+            f.write(v.reward_code)
 
         ckpt = short_checkpoint_path(log_path, int(v.iteration), int(args.seed))
         if ckpt is None:
@@ -358,9 +361,8 @@ def main() -> None:
             best_reward_code = v.reward_code
             best_dir = log_path / "card_plus_best"
             best_dir.mkdir(parents=True, exist_ok=True)
-            (best_dir / "specific.py").write_text(
-                v.reward_code, encoding="utf-8", newline="\n"
-            )
+            with (best_dir / "specific.py").open("w", encoding="utf-8", newline="\n") as f:
+                f.write(v.reward_code)
             (best_dir / "version.txt").write_text(
                 f"finalist_iter_{v.iteration}", encoding="utf-8"
             )

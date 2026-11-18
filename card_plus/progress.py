@@ -110,6 +110,50 @@ def _robot_and_goal_2d(traj: Dict[str, Any]) -> tuple:
     return pos, goal
 
 
+def crowdnav_goal_progress_from_dists(d0: float, d_final: float, d_best: float) -> float:
+    """Progress in [0,1] from start / final / best goal distances (env-only)."""
+    d0 = float(d0)
+    d_final = float(d_final)
+    d_best = float(d_best)
+    if d0 < 1e-12:
+        return 1.0 if d_final <= 1e-12 else 0.0
+    prog_final = 1.0 - d_final / d0
+    prog_best = 1.0 - d_best / d0
+    return float(np.clip(0.7 * prog_final + 0.3 * prog_best, 0.0, 1.0))
+
+
+def crowdnav_soft_near_goal(
+    d_best: float,
+    *,
+    radius: float = 0.3,
+    mult: float = 2.0,
+    floor_m: float = 1.0,
+) -> float:
+    """1 if the robot ever entered a near-goal band (soft success), else 0."""
+    thresh = max(float(mult) * max(float(radius), 1e-6), float(floor_m))
+    return 1.0 if float(d_best) <= thresh else 0.0
+
+
+def episode_proxy_score(
+    *,
+    success: float,
+    progress: float,
+    collided: float,
+    soft_near: float,
+) -> float:
+    """Env-grounded short-train score that still ranks policies when success=0.
+
+    Success maps to 1.0. Otherwise blend goal progress, soft-near, and survival
+    (not colliding). Never uses LLM/GT reward returns.
+    """
+    if float(success) >= 0.5:
+        return 1.0
+    p = float(np.clip(progress, 0.0, 1.0))
+    soft = float(np.clip(soft_near, 0.0, 1.0))
+    survive = 1.0 - float(np.clip(collided, 0.0, 1.0))
+    return float(np.clip(0.65 * p + 0.20 * soft + 0.15 * survive, 0.0, 1.0))
+
+
 def crowdnav_goal_progress(traj: Dict[str, Any]) -> float:
     """CrowdNav progress from start distance toward the goal (never GT reward).
 
@@ -118,14 +162,9 @@ def crowdnav_goal_progress(traj: Dict[str, Any]) -> float:
     """
     pos, goal = _robot_and_goal_2d(traj)
     dists = np.linalg.norm(pos - goal, axis=1)
-    d0 = float(dists[0])
-    d_final = float(dists[-1])
-    d_best = float(np.min(dists))
-    if d0 < 1e-12:
-        return 1.0 if d_final <= 1e-12 else 0.0
-    prog_final = 1.0 - d_final / d0
-    prog_best = 1.0 - d_best / d0
-    return float(np.clip(0.7 * prog_final + 0.3 * prog_best, 0.0, 1.0))
+    return crowdnav_goal_progress_from_dists(
+        float(dists[0]), float(dists[-1]), float(np.min(dists))
+    )
 
 
 PROGRESS_FNS: Dict[str, ProgressFn] = {
