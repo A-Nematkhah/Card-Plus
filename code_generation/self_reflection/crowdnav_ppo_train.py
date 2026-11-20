@@ -63,17 +63,18 @@ def read_checkpoint_meta(ckpt_path: str) -> Dict[str, Any]:
 
 def is_usable_torch_checkpoint(path: str) -> bool:
     """True if file exists and ``torch.load`` can read it (rejects truncated saves)."""
+    from code_generation.self_reflection.torch_compat import torch_load
+
     if not path or not os.path.isfile(path):
         return False
     if os.path.getsize(path) < 64:
         return False
     try:
-        torch.load(path, map_location="cpu", weights_only=True)
+        torch_load(path, map_location="cpu", weights_only=True)
         return True
     except Exception:
         try:
-            # Older PyTorch / non-weights_only state_dicts
-            torch.load(path, map_location="cpu")
+            torch_load(path, map_location="cpu")
             return True
         except Exception:
             return False
@@ -308,6 +309,9 @@ def train_ppo(
     Mid-train evals run only if ``eval_freq_steps > 0``. After training, a single
     end-of-short eval with ``final_eval_episodes`` (default 100) is always run.
     """
+    from code_generation.self_reflection.torch_compat import install_torch_load_compat, torch_load
+
+    install_torch_load_compat()
     _ensure_crowdnav_path()
     prev_cwd = os.getcwd()
     os.chdir(CROWDNAV_ROOT)

@@ -1,0 +1,77 @@
+{
+  "keep": true,
+  "skip_rl": false,
+  "mode": "gate",
+  "composite": 0.8735352932040583,
+  "reasons": [],
+  "metrics": {
+    "offline_rank": 0.9893366831130035,
+    "separation": 0.9949095136120509,
+    "anti_hack": 0.679283402697142,
+    "intra_scenario": 0.9078125000000001,
+    "composite": 0.8735352932040583,
+    "progress_auc": 0.9996761395838394,
+    "tpe_v1_rate": 0.9130434782608695,
+    "success/collided": 1.0,
+    "success/timeout": 0.9959555106167847,
+    "timeout/collided": 0.9615855380849261,
+    "return_std": 36.94926275226646,
+    "sep_scale": 12.932241963293261,
+    "mean_success": 100.5818237875494,
+    "mean_collided": -33.678419089229116,
+    "mean_timeout": 22.44735974035531,
+    "sep_success_collided": 0.9999690102380303,
+    "gap_success_collided": 134.2602428767785,
+    "sep_success_timeout": 0.9976284434061463,
+    "gap_success_timeout": 78.13446404719409,
+    "sep_timeout_collided": 0.9871310871919761,
+    "gap_timeout_collided": 56.125778829584426,
+    "intra_spearman_raw": 0.8156250000000004,
+    "intra_n_scenarios": 80.0,
+    "success_mean": 7.147466666666667,
+    "progress_mean": 4.695085714285715,
+    "flee_mean": -0.03900000000000001,
+    "orbit_mean": 1.1645224765477704,
+    "success_sum": 85.76960000000001,
+    "progress_sum": 56.34102857142858,
+    "flee_sum": -0.7800000000000001,
+    "orbit_sum": 23.29044953095541,
+    "probe_margin": 0.05
+  },
+  "report": {
+    "n_episodes": 560,
+    "mean_return": -23.85450109666119,
+    "outcome_counts": {
+      "success": 23,
+      "collided": 494,
+      "timeout": 43
+    },
+    "progress_auc": 0.9996761395838394,
+    "tpe_v1_rate": 0.9130434782608695,
+    "pair_accuracies": [
+      {
+        "pair": "success/collided",
+        "n_pairs": 11362,
+        "accuracy": 1.0
+      },
+      {
+        "pair": "success/timeout",
+        "n_pairs": 989,
+        "accuracy": 0.9959555106167847
+      },
+      {
+        "pair": "timeout/collided",
+        "n_pairs": 21242,
+        "accuracy": 0.9615855380849261
+      }
+    ],
+    "extras": {
+      "threshold": 0.8,
+      "tpe_v1_pass": true,
+      "mean_progress": 0.21536696366017258,
+      "outcome_return_auc": 0.9996761395838394,
+      "progress_auc_meaning": "outcome_return_auc(success vs fail cumulative returns)",
+      "episode_return": "sum"
+    }
+  }
+}

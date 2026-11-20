@@ -1,0 +1,371 @@
+{
+  "step": 2,
+  "n_candidates_target": 5,
+  "n_accepted": 5,
+  "llm_calls": 14,
+  "winner": {
+    "slot": 5,
+    "attempt": 1,
+    "composite": 0.8587287024291406,
+    "metrics": {
+      "offline_rank": 0.9990820073439413,
+      "separation": 0.9970305435058554,
+      "anti_hack": 0.6596032716671089,
+      "intra_scenario": 0.8727678571428572,
+      "composite": 0.8587287024291406,
+      "progress_auc": 1.0,
+      "tpe_v1_rate": 1.0,
+      "success/collided": 1.0,
+      "success/timeout": 1.0,
+      "timeout/collided": 0.996328029375765,
+      "return_std": 30.98370643392822,
+      "sep_scale": 10.844297251874876,
+      "mean_success": 78.91223443686252,
+      "mean_collided": -47.55790641472475,
+      "mean_timeout": 4.982468237011964,
+      "sep_success_collided": 0.9999913881596563,
+      "gap_success_collided": 126.47014085158727,
+      "sep_success_timeout": 0.9989066189757897,
+      "gap_success_timeout": 73.92976619985056,
+      "sep_timeout_collided": 0.9921936233821201,
+      "gap_timeout_collided": 52.54037465173671,
+      "intra_spearman_raw": 0.7455357142857144,
+      "intra_n_scenarios": 80.0,
+      "success_mean": 4.801333333333333,
+      "progress_mean": 2.325142857142857,
+      "flee_mean": -0.06499999999999999,
+      "orbit_mean": 0.5794612382738855,
+      "success_sum": 57.616,
+      "progress_sum": 27.901714285714284,
+      "flee_sum": -1.2999999999999998,
+      "orbit_sum": 11.58922476547771,
+      "probe_margin": 0.05
+    },
+    "selection": "composite"
+  },
+  "accepted": [
+    {
+      "slot": 0,
+      "attempt": 0,
+      "composite": 0.8424935584125471,
+      "metrics": {
+        "offline_rank": 0.9403657847660295,
+        "separation": 0.9530493409674866,
+        "anti_hack": 0.6623429731047084,
+        "intra_scenario": 0.8794642857142858,
+        "composite": 0.8424935584125471,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.7614631390641182,
+        "return_std": 25.814499063137156,
+        "sep_scale": 9.035074672098004,
+        "mean_success": 97.11079174167362,
+        "mean_collided": -15.024761884460016,
+        "mean_timeout": 1.3149060787821327,
+        "sep_success_collided": 0.9999959270439623,
+        "gap_success_collided": 112.13555362613364,
+        "sep_success_timeout": 0.9999751509636067,
+        "gap_success_timeout": 95.7958856628915,
+        "sep_timeout_collided": 0.8591769448948908,
+        "gap_timeout_collided": 16.33966796324215,
+        "intra_spearman_raw": 0.7589285714285716,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 5.8735,
+        "progress_mean": 2.8824285714285716,
+        "flee_mean": -0.12999999999999998,
+        "orbit_mean": 0.7213265478423567,
+        "success_sum": 70.482,
+        "progress_sum": 34.58914285714286,
+        "flee_sum": -2.5999999999999996,
+        "orbit_sum": 14.426530956847134,
+        "probe_margin": 0.05
+      },
+      "code_dir": "D:\\Thesis\\Implementation\\card-v1.0\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-19-07-42-55\\code_2\\candidates\\cand_0"
+    },
+    {
+      "slot": 1,
+      "attempt": 2,
+      "composite": 0.8457299578517163,
+      "metrics": {
+        "offline_rank": 0.9598437058657378,
+        "separation": 0.9595403265514809,
+        "anti_hack": 0.6507723452847085,
+        "intra_scenario": 0.8888392857142857,
+        "composite": 0.8457299578517163,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.8393748234629508,
+        "return_std": 33.17308649648836,
+        "sep_scale": 11.610580273770925,
+        "mean_success": 120.6194168095899,
+        "mean_collided": -27.861925635486188,
+        "mean_timeout": -4.877024510831608,
+        "sep_success_collided": 0.9999972071675705,
+        "gap_success_collided": 148.48134244507608,
+        "sep_success_timeout": 0.999979779635723,
+        "gap_success_timeout": 125.4964413204215,
+        "sep_timeout_collided": 0.8786439928511492,
+        "gap_timeout_collided": 22.98490112465458,
+        "intra_spearman_raw": 0.7776785714285716,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 7.1235,
+        "progress_mean": 2.8824285714285716,
+        "flee_mean": -0.12999999999999998,
+        "orbit_mean": 0.7213265478423567,
+        "success_sum": 85.482,
+        "progress_sum": 34.58914285714286,
+        "flee_sum": -2.5999999999999996,
+        "orbit_sum": 14.426530956847134,
+        "probe_margin": 0.05
+      },
+      "code_dir": "D:\\Thesis\\Implementation\\card-v1.0\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-19-07-42-55\\code_2\\candidates\\cand_1"
+    },
+    {
+      "slot": 2,
+      "attempt": 2,
+      "composite": 0.8578946694795282,
+      "metrics": {
+        "offline_rank": 0.9441319084831937,
+        "separation": 0.9754882823924415,
+        "anti_hack": 0.6803874797115881,
+        "intra_scenario": 0.8890625000000001,
+        "composite": 0.8578946694795282,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.7765276339327747,
+        "return_std": 37.699424433418336,
+        "sep_scale": 13.194798551696417,
+        "mean_success": 130.90157115674566,
+        "mean_collided": -6.678998110293095,
+        "mean_timeout": 26.83014067942729,
+        "sep_success_collided": 0.9999703754967456,
+        "gap_success_collided": 137.58056926703875,
+        "sep_success_timeout": 0.9996246616506399,
+        "gap_success_timeout": 104.07143047731837,
+        "sep_timeout_collided": 0.9268698100299391,
+        "gap_timeout_collided": 33.50913878972039,
+        "intra_spearman_raw": 0.7781250000000002,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 8.907133333333334,
+        "progress_mean": 5.8416571428571435,
+        "flee_mean": -0.10400000000000002,
+        "orbit_mean": 1.4522530956847135,
+        "success_sum": 106.88560000000001,
+        "progress_sum": 70.09988571428572,
+        "flee_sum": -2.0800000000000005,
+        "orbit_sum": 29.04506191369427,
+        "probe_margin": 0.05
+      },
+      "code_dir": "D:\\Thesis\\Implementation\\card-v1.0\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-19-07-42-55\\code_2\\candidates\\cand_2"
+    },
+    {
+      "slot": 3,
+      "attempt": 0,
+      "composite": 0.847267236663956,
+      "metrics": {
+        "offline_rank": 0.9316801619433198,
+        "separation": 0.9610328313712765,
+        "anti_hack": 0.6745062368608037,
+        "intra_scenario": 0.878125,
+        "composite": 0.847267236663956,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.7267206477732794,
+        "return_std": 23.35880603958307,
+        "sep_scale": 8.175582113854073,
+        "mean_success": 89.84076652401933,
+        "mean_collided": 0.38432684129075256,
+        "mean_timeout": 16.928224248213677,
+        "sep_success_collided": 0.9999822995822706,
+        "gap_success_collided": 89.45643968272857,
+        "sep_success_timeout": 0.9998661062890731,
+        "gap_success_timeout": 72.91254227580565,
+        "sep_timeout_collided": 0.8832500882424857,
+        "gap_timeout_collided": 16.543897406922923,
+        "intra_spearman_raw": 0.7562500000000002,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 5.759666666666668,
+        "progress_mean": 3.5037142857142847,
+        "flee_mean": -0.06499999999999999,
+        "orbit_mean": 0.8711918574108279,
+        "success_sum": 69.11600000000001,
+        "progress_sum": 42.044571428571416,
+        "flee_sum": -1.2999999999999998,
+        "orbit_sum": 17.42383714821656,
+        "probe_margin": 0.05
+      },
+      "code_dir": "D:\\Thesis\\Implementation\\card-v1.0\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-19-07-42-55\\code_2\\candidates\\cand_3"
+    },
+    {
+      "slot": 5,
+      "attempt": 1,
+      "composite": 0.8587287024291406,
+      "metrics": {
+        "offline_rank": 0.9990820073439413,
+        "separation": 0.9970305435058554,
+        "anti_hack": 0.6596032716671089,
+        "intra_scenario": 0.8727678571428572,
+        "composite": 0.8587287024291406,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.996328029375765,
+        "return_std": 30.98370643392822,
+        "sep_scale": 10.844297251874876,
+        "mean_success": 78.91223443686252,
+        "mean_collided": -47.55790641472475,
+        "mean_timeout": 4.982468237011964,
+        "sep_success_collided": 0.9999913881596563,
+        "gap_success_collided": 126.47014085158727,
+        "sep_success_timeout": 0.9989066189757897,
+        "gap_success_timeout": 73.92976619985056,
+        "sep_timeout_collided": 0.9921936233821201,
+        "gap_timeout_collided": 52.54037465173671,
+        "intra_spearman_raw": 0.7455357142857144,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 4.801333333333333,
+        "progress_mean": 2.325142857142857,
+        "flee_mean": -0.06499999999999999,
+        "orbit_mean": 0.5794612382738855,
+        "success_sum": 57.616,
+        "progress_sum": 27.901714285714284,
+        "flee_sum": -1.2999999999999998,
+        "orbit_sum": 11.58922476547771,
+        "probe_margin": 0.05
+      },
+      "code_dir": "D:\\Thesis\\Implementation\\card-v1.0\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-19-07-42-55\\code_2\\candidates\\cand_5"
+    }
+  ],
+  "all_attempts": [
+    {
+      "slot": 0,
+      "attempt": 0,
+      "accepted": true,
+      "composite": 0.8424935584125471,
+      "reasons": []
+    },
+    {
+      "slot": 1,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7309957542823611,
+      "reasons": [
+        "timeout/collided=0.1098 < 0.60",
+        "composite=0.7310 < 0.75",
+        "separation=0.6668 < 0.70"
+      ]
+    },
+    {
+      "slot": 1,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.8463178130520244,
+      "reasons": [
+        "anti_hack=0.6477 < 0.65"
+      ]
+    },
+    {
+      "slot": 1,
+      "attempt": 2,
+      "accepted": true,
+      "composite": 0.8457299578517163,
+      "reasons": []
+    },
+    {
+      "slot": 2,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.8033161334876179,
+      "reasons": [
+        "anti_hack=0.6309 < 0.65"
+      ]
+    },
+    {
+      "slot": 2,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.7386638655699123,
+      "reasons": [
+        "timeout/collided=0.1165 < 0.60",
+        "composite=0.7387 < 0.75",
+        "separation=0.6649 < 0.70"
+      ]
+    },
+    {
+      "slot": 2,
+      "attempt": 2,
+      "accepted": true,
+      "composite": 0.8578946694795282,
+      "reasons": []
+    },
+    {
+      "slot": 3,
+      "attempt": 0,
+      "accepted": true,
+      "composite": 0.847267236663956,
+      "reasons": []
+    },
+    {
+      "slot": 4,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7792915273412478,
+      "reasons": [
+        "timeout/collided=0.3553 < 0.60"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.7904109524282423,
+      "reasons": [
+        "timeout/collided=0.5216 < 0.60",
+        "anti_hack=0.6408 < 0.65"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 2,
+      "accepted": false,
+      "composite": 0.8285741164587581,
+      "reasons": [
+        "anti_hack=0.6401 < 0.65"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 3,
+      "accepted": false,
+      "composite": 0.8165322804994829,
+      "reasons": [
+        "anti_hack=0.6411 < 0.65"
+      ]
+    },
+    {
+      "slot": 5,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7566397340994881,
+      "reasons": [
+        "timeout/collided=0.2503 < 0.60"
+      ]
+    },
+    {
+      "slot": 5,
+      "attempt": 1,
+      "accepted": true,
+      "composite": 0.8587287024291406,
+      "reasons": []
+    }
+  ]
+}

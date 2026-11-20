@@ -300,6 +300,10 @@ def make_pp_vec_env(
     restore_llm_reward: bool = True,
 ):
     """Single-process DummyVecEnv + VecPyTorch + optional GST + LLM reward restore."""
+    from code_generation.self_reflection.torch_compat import install_torch_load_compat
+
+    # torch 1.11 rejects weights_only=; GST wrappers pass it for newer PyTorch.
+    install_torch_load_compat()
     _ensure_crowdnav_path()
     # GST / crowd_sim imports resolve relative to CrowdNav root for some assets.
     os.chdir(CROWDNAV_ROOT)

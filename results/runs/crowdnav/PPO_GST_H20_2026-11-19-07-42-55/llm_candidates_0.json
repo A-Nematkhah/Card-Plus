@@ -1,0 +1,414 @@
+{
+  "step": 0,
+  "n_candidates_target": 5,
+  "n_accepted": 4,
+  "llm_calls": 20,
+  "winner": {
+    "slot": 6,
+    "attempt": 0,
+    "composite": 0.8864037175595348,
+    "metrics": {
+      "offline_rank": 0.9562491039504805,
+      "separation": 0.9865616485030234,
+      "anti_hack": 0.7591891372833611,
+      "intra_scenario": 0.8901785714285715,
+      "composite": 0.8864037175595348,
+      "progress_auc": 0.9926321755323455,
+      "tpe_v1_rate": 0.0,
+      "success/collided": 1.0,
+      "success/timeout": 0.9079878665318504,
+      "timeout/collided": 0.9214292439506638,
+      "return_std": 31.70949520374783,
+      "sep_scale": 11.09832332131174,
+      "mean_success": 60.248300105471856,
+      "mean_collided": -29.990713125195864,
+      "mean_timeout": 8.26315745809446,
+      "sep_success_collided": 0.9997057742669475,
+      "gap_success_collided": 90.23901323066772,
+      "sep_success_timeout": 0.9908431473371342,
+      "gap_success_timeout": 51.985142647377394,
+      "sep_timeout_collided": 0.9691360239049884,
+      "gap_timeout_collided": 38.25387058329032,
+      "intra_spearman_raw": 0.7803571428571431,
+      "intra_n_scenarios": 80.0,
+      "success_mean": 2.9308833333333326,
+      "progress_mean": 1.4220142857142857,
+      "flee_mean": -3.210636613405151,
+      "orbit_mean": 0.5832632739211785,
+      "success_sum": 35.17059999999999,
+      "progress_sum": 17.064171428571427,
+      "flee_sum": -64.21273226810303,
+      "orbit_sum": 11.66526547842357,
+      "probe_margin": 0.05
+    },
+    "selection": "composite"
+  },
+  "accepted": [
+    {
+      "slot": 0,
+      "attempt": 0,
+      "composite": 0.8478344195339361,
+      "metrics": {
+        "offline_rank": 0.9985053196497505,
+        "separation": 0.9935042338800515,
+        "anti_hack": 0.6575878913498188,
+        "intra_scenario": 0.8421875000000001,
+        "composite": 0.8478344195339361,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.994021278599002,
+        "return_std": 98.38673999390622,
+        "sep_scale": 34.435358997867176,
+        "mean_success": 202.42537178441194,
+        "mean_collided": -217.08009641205612,
+        "mean_timeout": -81.66843631420944,
+        "sep_success_collided": 0.9999948802732896,
+        "gap_success_collided": 419.5054681964681,
+        "sep_success_timeout": 0.9997388255770909,
+        "gap_success_timeout": 284.09380809862137,
+        "sep_timeout_collided": 0.9807789957897739,
+        "gap_timeout_collided": 135.41166009784666,
+        "intra_spearman_raw": 0.6843750000000002,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 9.676333333333334,
+        "progress_mean": 1.1465714285714286,
+        "flee_mean": -3.0223092907241202,
+        "orbit_mean": -0.012269380863057311,
+        "success_sum": 116.116,
+        "progress_sum": 13.758857142857142,
+        "flee_sum": -60.446185814482405,
+        "orbit_sum": -0.24538761726114622,
+        "probe_margin": 0.05
+      },
+      "code_dir": "D:\\Thesis\\Implementation\\card-v1.0\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-19-07-42-55\\code_0\\candidates\\cand_0"
+    },
+    {
+      "slot": 3,
+      "attempt": 2,
+      "composite": 0.8575031250284586,
+      "metrics": {
+        "offline_rank": 0.9996822333113643,
+        "separation": 0.9971769532328426,
+        "anti_hack": 0.6598590286153742,
+        "intra_scenario": 0.8680803571428573,
+        "composite": 0.8575031250284586,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.9987289332454571,
+        "return_std": 33.04597759787588,
+        "sep_scale": 11.566092159256558,
+        "mean_success": 86.37997014365752,
+        "mean_collided": -52.3704926498311,
+        "mean_timeout": 3.8796174500770744,
+        "sep_success_collided": 0.9999938331307201,
+        "gap_success_collided": 138.75046279348862,
+        "sep_success_timeout": 0.9992022758239981,
+        "gap_success_timeout": 82.50035269358044,
+        "sep_timeout_collided": 0.9923347507438097,
+        "gap_timeout_collided": 56.25011009990818,
+        "intra_spearman_raw": 0.7361607142857144,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 4.790325,
+        "progress_mean": 1.9613071428571427,
+        "flee_mean": -0.24779819680430903,
+        "orbit_mean": 0.464548787054379,
+        "success_sum": 57.483900000000006,
+        "progress_sum": 23.535685714285712,
+        "flee_sum": -4.955963936086181,
+        "orbit_sum": 9.29097574108758,
+        "probe_margin": 0.05
+      },
+      "code_dir": "D:\\Thesis\\Implementation\\card-v1.0\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-19-07-42-55\\code_0\\candidates\\cand_3"
+    },
+    {
+      "slot": 5,
+      "attempt": 2,
+      "composite": 0.8413233150416088,
+      "metrics": {
+        "offline_rank": 0.9704947745033424,
+        "separation": 0.942546596246313,
+        "anti_hack": 0.6729644100103164,
+        "intra_scenario": 0.8654017857142857,
+        "composite": 0.8413233150416088,
+        "progress_auc": 1.0,
+        "tpe_v1_rate": 1.0,
+        "success/collided": 1.0,
+        "success/timeout": 1.0,
+        "timeout/collided": 0.8819790980133697,
+        "return_std": 314.7752421739365,
+        "sep_scale": 110.17133476087776,
+        "mean_success": 863.0709330949413,
+        "mean_collided": -598.7245223634075,
+        "mean_timeout": -425.8588917783884,
+        "sep_success_collided": 0.9999982717213409,
+        "gap_success_collided": 1461.795455458349,
+        "sep_success_timeout": 0.999991700617397,
+        "gap_success_timeout": 1288.9298248733298,
+        "sep_timeout_collided": 0.8276498164002014,
+        "gap_timeout_collided": 172.86563058501906,
+        "intra_spearman_raw": 0.7308035714285716,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 39.199333333333335,
+        "progress_mean": 4.58742857142857,
+        "flee_mean": -17.829556621470218,
+        "orbit_mean": -0.13103049874071673,
+        "success_sum": 470.392,
+        "progress_sum": 55.04914285714285,
+        "flee_sum": -356.59113242940435,
+        "orbit_sum": -2.6206099748143346,
+        "probe_margin": 0.05
+      },
+      "code_dir": "D:\\Thesis\\Implementation\\card-v1.0\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-19-07-42-55\\code_0\\candidates\\cand_5"
+    },
+    {
+      "slot": 6,
+      "attempt": 0,
+      "composite": 0.8864037175595348,
+      "metrics": {
+        "offline_rank": 0.9562491039504805,
+        "separation": 0.9865616485030234,
+        "anti_hack": 0.7591891372833611,
+        "intra_scenario": 0.8901785714285715,
+        "composite": 0.8864037175595348,
+        "progress_auc": 0.9926321755323455,
+        "tpe_v1_rate": 0.0,
+        "success/collided": 1.0,
+        "success/timeout": 0.9079878665318504,
+        "timeout/collided": 0.9214292439506638,
+        "return_std": 31.70949520374783,
+        "sep_scale": 11.09832332131174,
+        "mean_success": 60.248300105471856,
+        "mean_collided": -29.990713125195864,
+        "mean_timeout": 8.26315745809446,
+        "sep_success_collided": 0.9997057742669475,
+        "gap_success_collided": 90.23901323066772,
+        "sep_success_timeout": 0.9908431473371342,
+        "gap_success_timeout": 51.985142647377394,
+        "sep_timeout_collided": 0.9691360239049884,
+        "gap_timeout_collided": 38.25387058329032,
+        "intra_spearman_raw": 0.7803571428571431,
+        "intra_n_scenarios": 80.0,
+        "success_mean": 2.9308833333333326,
+        "progress_mean": 1.4220142857142857,
+        "flee_mean": -3.210636613405151,
+        "orbit_mean": 0.5832632739211785,
+        "success_sum": 35.17059999999999,
+        "progress_sum": 17.064171428571427,
+        "flee_sum": -64.21273226810303,
+        "orbit_sum": 11.66526547842357,
+        "probe_margin": 0.05
+      },
+      "code_dir": "D:\\Thesis\\Implementation\\card-v1.0\\results\\runs\\crowdnav\\PPO_GST_H20_2026-11-19-07-42-55\\code_0\\candidates\\cand_6"
+    }
+  ],
+  "all_attempts": [
+    {
+      "slot": 0,
+      "attempt": 0,
+      "accepted": true,
+      "composite": 0.8478344195339361,
+      "reasons": []
+    },
+    {
+      "slot": 1,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7627672481929642,
+      "reasons": [
+        "success/timeout=0.3114 < 0.80"
+      ]
+    },
+    {
+      "slot": 1,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.7374570141012632,
+      "reasons": [
+        "timeout/collided=0.1716 < 0.60",
+        "composite=0.7375 < 0.75",
+        "separation=0.6682 < 0.70"
+      ]
+    },
+    {
+      "slot": 1,
+      "attempt": 2,
+      "accepted": false,
+      "composite": 0.7319150865267792,
+      "reasons": [
+        "timeout/collided=0.1820 < 0.60",
+        "composite=0.7319 < 0.75",
+        "separation=0.6727 < 0.70"
+      ]
+    },
+    {
+      "slot": 1,
+      "attempt": 3,
+      "accepted": false,
+      "composite": 0.7387460052549042,
+      "reasons": [
+        "timeout/collided=0.1741 < 0.60",
+        "composite=0.7387 < 0.75",
+        "separation=0.6683 < 0.70"
+      ]
+    },
+    {
+      "slot": 2,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.6524709218194344,
+      "reasons": [
+        "success/collided=0.8415 < 0.85",
+        "timeout/collided=0.1619 < 0.60",
+        "anti_hack: orbit_mean=0.0457 not worse than progress_mean=-2.2669+0.05 (reward prefers high-clearance loitering over approaching the goal)",
+        "composite=0.6525 < 0.75",
+        "anti_hack=0.6137 < 0.65",
+        "separation=0.6674 < 0.70"
+      ]
+    },
+    {
+      "slot": 2,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.6827655461969114,
+      "reasons": [
+        "timeout/collided=0.0022 < 0.60",
+        "composite=0.6828 < 0.75",
+        "separation=0.6369 < 0.70"
+      ]
+    },
+    {
+      "slot": 2,
+      "attempt": 2,
+      "accepted": false,
+      "composite": 0.687647376834885,
+      "reasons": [
+        "timeout/collided=0.0028 < 0.60",
+        "composite=0.6876 < 0.75",
+        "separation=0.6501 < 0.70"
+      ]
+    },
+    {
+      "slot": 2,
+      "attempt": 3,
+      "accepted": false,
+      "composite": 0.7114504256463687,
+      "reasons": [
+        "timeout/collided=0.0066 < 0.60",
+        "composite=0.7115 < 0.75",
+        "separation=0.6632 < 0.70"
+      ]
+    },
+    {
+      "slot": 3,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7453600963545116,
+      "reasons": [
+        "timeout/collided=0.3493 < 0.60",
+        "composite=0.7454 < 0.75"
+      ]
+    },
+    {
+      "slot": 3,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.7387779766085314,
+      "reasons": [
+        "timeout/collided=0.1586 < 0.60",
+        "composite=0.7388 < 0.75",
+        "separation=0.6671 < 0.70"
+      ]
+    },
+    {
+      "slot": 3,
+      "attempt": 2,
+      "accepted": true,
+      "composite": 0.8575031250284586,
+      "reasons": []
+    },
+    {
+      "slot": 4,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.7268417442993463,
+      "reasons": [
+        "timeout/collided=0.1291 < 0.60",
+        "composite=0.7268 < 0.75",
+        "separation=0.6676 < 0.70"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.7350258713568955,
+      "reasons": [
+        "timeout/collided=0.1212 < 0.60",
+        "composite=0.7350 < 0.75",
+        "separation=0.6660 < 0.70"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 2,
+      "accepted": false,
+      "composite": 0.7380766223027688,
+      "reasons": [
+        "timeout/collided=0.1346 < 0.60",
+        "composite=0.7381 < 0.75",
+        "separation=0.6660 < 0.70"
+      ]
+    },
+    {
+      "slot": 4,
+      "attempt": 3,
+      "accepted": false,
+      "composite": 0.6644624035594136,
+      "reasons": [
+        "timeout/collided=0.0880 < 0.60",
+        "anti_hack: orbit_mean=-0.0304 not worse than progress_mean=-0.4944+0.05 (reward prefers high-clearance loitering over approaching the goal)",
+        "composite=0.6645 < 0.75",
+        "separation=0.6610 < 0.70"
+      ]
+    },
+    {
+      "slot": 5,
+      "attempt": 0,
+      "accepted": false,
+      "composite": 0.8006581301162473,
+      "reasons": [
+        "anti_hack: flee_mean=-0.7740 not worse than progress_mean=-0.7803+0.05 (dense reward prefers fleeing over approaching the goal)",
+        "anti_hack: orbit_mean=0.6372 not worse than progress_mean=-0.7803+0.05 (reward prefers high-clearance loitering over approaching the goal)",
+        "anti_hack=0.5681 < 0.65"
+      ]
+    },
+    {
+      "slot": 5,
+      "attempt": 1,
+      "accepted": false,
+      "composite": 0.7938024625665053,
+      "reasons": [
+        "anti_hack: orbit_mean=-0.4148 not worse than progress_mean=-2.0062+0.05 (reward prefers high-clearance loitering over approaching the goal)",
+        "anti_hack=0.6214 < 0.65"
+      ]
+    },
+    {
+      "slot": 5,
+      "attempt": 2,
+      "accepted": true,
+      "composite": 0.8413233150416088,
+      "reasons": []
+    },
+    {
+      "slot": 6,
+      "attempt": 0,
+      "accepted": true,
+      "composite": 0.8864037175595348,
+      "reasons": []
+    }
+  ]
+}

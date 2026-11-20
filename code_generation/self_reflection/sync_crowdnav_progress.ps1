@@ -42,11 +42,25 @@ try {
     # Never stage secrets even if present under results by mistake
     git reset HEAD -- "**/xai_key" "**/xai_keys.json" "xai_key" "xai_keys.json" 2>$null
 
+    function Invoke-GitPushRetry {
+        # Git LFS verify often fails once with EOF on flaky networks; retry.
+        $maxAttempts = 4
+        for ($i = 1; $i -le $maxAttempts; $i++) {
+            git push origin HEAD
+            if ($LASTEXITCODE -eq 0) { return }
+            if ($i -eq $maxAttempts) {
+                throw "git push failed after $maxAttempts attempts — progress is committed locally; push when online"
+            }
+            Write-Host "git push failed (attempt $i/$maxAttempts); retrying in $($i * 3)s..."
+            Start-Sleep -Seconds ($i * 3)
+        }
+    }
+
     $status = git status --porcelain -- "results" ".gitattributes"
     if (-not $status) {
         Write-Host "Nothing new under results/ to commit."
         if (-not $NoPush) {
-            git push origin HEAD
+            Invoke-GitPushRetry
         }
         return
     }
@@ -57,10 +71,7 @@ try {
     }
 
     if (-not $NoPush) {
-        git push origin HEAD
-        if ($LASTEXITCODE -ne 0) {
-            throw "git push failed — progress is committed locally; push when online"
-        }
+        Invoke-GitPushRetry
         Write-Host "Pushed CrowdNav progress to origin."
     } else {
         Write-Host "Committed locally (NoPush)."

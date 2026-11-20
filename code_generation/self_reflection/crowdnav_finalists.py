@@ -277,6 +277,11 @@ def main() -> None:
             resumed = False
         else:
             # Seed finalist TB dir with short PPO checkpoint (and eval history if present).
+            from code_generation.self_reflection.crowdnav_ppo_train import (
+                is_usable_torch_checkpoint,
+                read_checkpoint_meta,
+            )
+
             tb = code_dir / f"seed_{args.seed}" / "tensorboard_log"
             eval_dir = tb / "eval"
             eval_dir.mkdir(parents=True, exist_ok=True)
@@ -285,22 +290,46 @@ def main() -> None:
                 raise SystemExit(
                     f"Finalist iter={v.iteration}: expected PPO .pt checkpoint, got {ckpt}"
                 )
-            shutil.copy2(ckpt, dest_model)
-            short_eval = (
-                log_path
-                / f"code_{int(v.iteration) - 1}"
-                / f"seed_{args.seed}"
-                / "tensorboard_log"
-                / "eval"
-                / "evaluations.npz"
+            # If a previous finalist continue was interrupted, keep those weights
+            # (do NOT re-copy the short ckpt and wipe progress).
+            dest_meta = (
+                read_checkpoint_meta(str(dest_model))
+                if dest_model.is_file() and is_usable_torch_checkpoint(str(dest_model))
+                else {}
             )
-            if short_eval.is_file():
-                shutil.copy2(short_eval, eval_dir / "evaluations.npz")
-            print_with_color(
-                f"Finalist iter={v.iteration}: resume {ckpt.name} +{extra} -> {code_dir}",
-                "BLUE",
+            dest_done = int(dest_meta.get("steps", 0) or 0)
+            dest_complete = bool(dest_meta.get("complete"))
+            reuse_partial = (
+                dest_model.is_file()
+                and is_usable_torch_checkpoint(str(dest_model))
+                and dest_done > 0
+                and not dest_complete
             )
-            if extra <= 0:
+            if not reuse_partial:
+                shutil.copy2(ckpt, dest_model)
+                short_eval = (
+                    log_path
+                    / f"code_{int(v.iteration) - 1}"
+                    / f"seed_{args.seed}"
+                    / "tensorboard_log"
+                    / "eval"
+                    / "evaluations.npz"
+                )
+                if short_eval.is_file():
+                    shutil.copy2(short_eval, eval_dir / "evaluations.npz")
+                dest_done = 0
+                dest_complete = False
+                print_with_color(
+                    f"Finalist iter={v.iteration}: resume {ckpt.name} +{extra} -> {code_dir}",
+                    "BLUE",
+                )
+            else:
+                print_with_color(
+                    f"Finalist iter={v.iteration}: continue partial "
+                    f"{dest_model.name} done={dest_done}/{extra} -> {code_dir}",
+                    "BLUE",
+                )
+            if extra <= 0 or dest_complete or (reuse_partial and dest_done >= int(extra)):
                 learning_result = {}
                 if (eval_dir / "evaluations.npz").is_file():
                     raw = np.load(eval_dir / "evaluations.npz")
@@ -308,6 +337,7 @@ def main() -> None:
                 continue_curve = extract_success_curve(learning_result) or list(v.success_curve)
                 resumed = True
             else:
+                # Pass full continue budget; train_and_eval subtracts meta.steps itself.
                 learning_result, _, _ = train_and_eval(
                     args=args,
                     seed=args.seed,
@@ -317,7 +347,7 @@ def main() -> None:
                     specific_code_path=str(specific_path),
                     load_model=False,
                     resume_model_path=str(dest_model),
-                    train_steps=extra,
+                    train_steps=int(extra),
                 )
                 continue_curve = extract_success_curve(learning_result) or []
                 resumed = True

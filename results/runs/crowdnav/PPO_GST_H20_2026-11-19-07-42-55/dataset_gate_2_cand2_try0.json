@@ -1,0 +1,79 @@
+{
+  "keep": false,
+  "skip_rl": true,
+  "mode": "gate",
+  "composite": 0.8033161334876179,
+  "reasons": [
+    "anti_hack=0.6309 < 0.65"
+  ],
+  "metrics": {
+    "offline_rank": 0.9019943366582996,
+    "separation": 0.9457022569774985,
+    "anti_hack": 0.6309069805236993,
+    "intra_scenario": 0.8004464285714287,
+    "composite": 0.8033161334876179,
+    "progress_auc": 0.977572666180876,
+    "tpe_v1_rate": 0.6956521739130435,
+    "success/collided": 0.9803731737370182,
+    "success/timeout": 0.9453993933265925,
+    "timeout/collided": 0.7035119103662555,
+    "return_std": 19.836089365153555,
+    "sep_scale": 6.942631277803744,
+    "mean_success": 28.15363475927687,
+    "mean_collided": -29.979843942707014,
+    "mean_timeout": -18.542750952637093,
+    "sep_success_collided": 0.999769125918297,
+    "gap_success_collided": 58.13347870198388,
+    "sep_success_timeout": 0.9988021586807857,
+    "gap_success_timeout": 46.69638571191396,
+    "sep_timeout_collided": 0.8385354863334129,
+    "gap_timeout_collided": 11.437092990069921,
+    "intra_spearman_raw": 0.6008928571428573,
+    "intra_n_scenarios": 80.0,
+    "success_mean": 1.8804999999999996,
+    "progress_mean": 0.5358571428571426,
+    "flee_mean": -0.06499999999999999,
+    "orbit_mean": 0.43359592870541414,
+    "success_sum": 22.565999999999995,
+    "progress_sum": 6.430285714285711,
+    "flee_sum": -1.2999999999999998,
+    "orbit_sum": 8.671918574108282,
+    "probe_margin": 0.05
+  },
+  "report": {
+    "n_episodes": 560,
+    "mean_return": -26.714013569995164,
+    "outcome_counts": {
+      "success": 23,
+      "collided": 494,
+      "timeout": 43
+    },
+    "progress_auc": 0.977572666180876,
+    "tpe_v1_rate": 0.6956521739130435,
+    "pair_accuracies": [
+      {
+        "pair": "success/collided",
+        "n_pairs": 11362,
+        "accuracy": 0.9803731737370182
+      },
+      {
+        "pair": "success/timeout",
+        "n_pairs": 989,
+        "accuracy": 0.9453993933265925
+      },
+      {
+        "pair": "timeout/collided",
+        "n_pairs": 21242,
+        "accuracy": 0.7035119103662555
+      }
+    ],
+    "extras": {
+      "threshold": 0.8,
+      "tpe_v1_pass": false,
+      "mean_progress": 0.21536696366017258,
+      "outcome_return_auc": 0.977572666180876,
+      "progress_auc_meaning": "outcome_return_auc(success vs fail cumulative returns)",
+      "episode_return": "sum"
+    }
+  }
+}

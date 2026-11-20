@@ -1,0 +1,11 @@
+{
+  "final_eval_episodes": 100,
+  "success_rate": 0.01,
+  "mean_return": -7.0768421510001644,
+  "mean_length": 82.84,
+  "mean_progress": 0.12277554919386176,
+  "collision_rate": 0.62,
+  "soft_near_rate": 0.02,
+  "proxy_score": 0.14089273888305054,
+  "timesteps": 249990
+}

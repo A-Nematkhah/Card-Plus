@@ -35,9 +35,15 @@ class CrowdNavPredInterfaceMultiEnv(object):
         checkpoint_dir = join(load_path, 'checkpoint')
         self.model = st_model(self.args_eval, device=device).to(device)
         model_filename = 'epoch_'+str(self.args_eval.num_epochs)+'.pt'
-        model_checkpoint = torch.load(
-            join(checkpoint_dir, model_filename), map_location=device, weights_only=False
-        )
+        # weights_only= only exists on newer PyTorch; torch 1.11 forwards it to
+        # Unpickler and raises TypeError. Try new API first, then fall back.
+        _ckpt_path = join(checkpoint_dir, model_filename)
+        try:
+            model_checkpoint = torch.load(
+                _ckpt_path, map_location=device, weights_only=False
+            )
+        except TypeError:
+            model_checkpoint = torch.load(_ckpt_path, map_location=device)
         self.model.load_state_dict(model_checkpoint['model_state_dict'])
         self.model.eval()
         print("LOADED MODEL")

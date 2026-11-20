@@ -35,9 +35,7 @@ param(
     [string]$DatasetPath = "",
     [switch]$EvalBest,
     # If dataset missing: fail (default) instead of silently disabling the gate.
-    [switch]$AllowMissingDataset,
-    # After each CARD step / finalists: commit+push results/ for cross-machine resume.
-    [bool]$PushProgress = $true
+    [switch]$AllowMissingDataset
 )
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -153,7 +151,6 @@ Write-Host "LEAN budget: short=${TrainRounds}x${TrainMaxSteps}=$approxShort; fin
 Write-Host "eval: mid_train every ${EvalFreq} steps x ${NEvalEpisodes}eps (SH); end_of_short=${FinalEvalEpisodes}eps; llm_cand=$LlmCandidates; NoFinalists=$NoFinalists"
 
 function Invoke-Card([string[]]$arguments, [string]$name) {
-    # sync_crowdnav_progress.ps1 Set-Locations to repo root; always restore before python.
     Set-Location $here
     $argv = [System.Collections.Generic.List[string]]::new()
     foreach ($a in $arguments) { [void]$argv.Add([string]$a) }
@@ -168,21 +165,8 @@ function Invoke-Card([string[]]$arguments, [string]$name) {
     }
 }
 
-function Sync-Progress([string]$message) {
-    if (-not $PushProgress) { return }
-    $syncPs1 = Join-Path $here "sync_crowdnav_progress.ps1"
-    Write-Host "---- git sync: $message ----"
-    try {
-        & $syncPs1 -Message $message -LogPath $runLogPath
-    } catch {
-        Write-Host "WARNING: progress sync failed (training continues): $_"
-    } finally {
-        Set-Location $here
-    }
-}
-
 Write-Host "Starting CARD CrowdNav++ circle-crossing-v0 run"
-Write-Host "cwd=$here TrainRounds=$TrainRounds TrainMaxSteps=$TrainMaxSteps Smoke=$Smoke PushProgress=$PushProgress"
+Write-Host "cwd=$here TrainRounds=$TrainRounds TrainMaxSteps=$TrainMaxSteps Smoke=$Smoke"
 Write-Host "XAI_KEYS_PATH=$($env:XAI_KEYS_PATH)"
 Write-Host "XAI_PROXY=$($env:XAI_PROXY)"
 
@@ -194,12 +178,10 @@ if ($ResumeLogPath -ne "") {
     Write-Host "Resuming LOG_PATH=$runLogPath from step $StartStep"
 } else {
     $stamp = Get-Date -Format "yyyy-MM-dd-HH-mm-ss"
-    # Portable path: pushed under results/ so another machine can git pull + resume.
     $runLogPath = Join-Path $runsRoot "PPO_GST_H20_$stamp"
     New-Item -ItemType Directory -Force -Path $runLogPath | Out-Null
     $StartStep = 0
     Invoke-Card (@("crowdnav_exp_one_step.py") + $common + @("--step", "0", "--log_path", $runLogPath)) "step0"
-    Sync-Progress "crowdnav card step0 init $stamp"
 }
 
 if (-not (Test-Path -LiteralPath $runLogPath)) {
@@ -226,7 +208,6 @@ for ($k = 1; $k -le $TrainRounds; $k++) {
             Write-Host "Found $codePath -> skip query$queryStep (reward already generated)"
         } else {
             Invoke-Card @("query_llm_crowdnav.py", "--rl_question_file_path", $qPath) "query$queryStep"
-            Sync-Progress "crowdnav card query$queryStep"
         }
     }
     if ($StartStep -le $k) {
@@ -250,9 +231,6 @@ for ($k = 1; $k -le $TrainRounds; $k++) {
             Write-Host "Found incomplete $modelPt (no eval yet) -> resume/retrain in Python"
         }
         Invoke-Card $stepArgs "step$k"
-        if (-not $skippedTrain) {
-            Sync-Progress "crowdnav card step$k short-train"
-        }
     }
 }
 
@@ -289,7 +267,6 @@ if (-not $NoFinalists) {
                 "--seed", "1"
             )
             Invoke-Card $finArgs "finalists_${FinalistTopK}x${FinalistSteps}"
-            Sync-Progress "crowdnav card finalists done"
         }
     }
 }
@@ -305,12 +282,9 @@ if ($EvalBest) {
     ) "eval_best"
 }
 
-Sync-Progress "crowdnav card DONE"
 Write-Host "DONE $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "log: $runLogPath"
-Write-Host "Resume on another machine:"
-Write-Host "  git pull"
-Write-Host "  copy xai_key (not in git)"
+Write-Host "Resume:"
 Write-Host "  .\run_crowdnav_card.ps1 -ResumeLogPath <log> -StartStep N"
 $resultsHint = Join-Path $repo "results\crowdnav"
 if (Test-Path -LiteralPath $resultsHint) {

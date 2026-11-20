@@ -76,6 +76,10 @@ def download_gst_checkpoint(
 
 
 def ensure_gst_checkpoint(*, randomized: bool = True, download: bool = True) -> str:
+    # GST torch.load(..., weights_only=False) must not crash on torch 1.11.
+    from code_generation.self_reflection.torch_compat import install_torch_load_compat
+
+    install_torch_load_compat()
     if gst_checkpoint_ready(randomized=randomized):
         return gst_model_dir(randomized=randomized)
     if not download:
