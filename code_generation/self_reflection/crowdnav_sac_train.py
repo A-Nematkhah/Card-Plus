@@ -172,6 +172,15 @@ def train_and_eval_sac(
             clip_reward=10.0,
             gamma=0.99,
         )
+        # EvalCallback syncs VecNormalize stats; eval must match train wrapping.
+        eval_env = VecNormalize(
+            eval_env,
+            training=False,
+            norm_obs=False,
+            norm_reward=False,
+            clip_reward=10.0,
+            gamma=0.99,
+        )
         print_with_color(
             "SAC VecNormalize(norm_reward=True, clip_reward=10) enabled "
             "(set CARD_SAC_NORM_REWARD=0 to disable)",
@@ -218,7 +227,7 @@ def train_and_eval_sac(
             env.save(os.path.join(train_log_path, "vecnormalize.pkl"))
 
     def _maybe_load_vecnorm() -> None:
-        nonlocal env
+        nonlocal env, eval_env
         if not norm_reward:
             return
         stats = os.path.join(train_log_path, "vecnormalize.pkl")
@@ -226,6 +235,10 @@ def train_and_eval_sac(
             env = VecNormalize.load(stats, env)
             env.training = True
             env.norm_reward = True
+            if isinstance(eval_env, VecNormalize):
+                eval_env = VecNormalize.load(stats, eval_env)
+                eval_env.training = False
+                eval_env.norm_reward = False
 
     if load_model and not resume_model_path:
         resume_path = os.path.join(train_log_path, "latest_model.zip")
