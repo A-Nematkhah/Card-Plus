@@ -22,6 +22,7 @@ if str(_ROOT) not in sys.path:
 from card_plus.archive import RewardArchive, VersionRecord, score_from_curve, success_curve_auc
 from card_plus.config import CardPlusConfig
 from card_plus.hooks import enrich_feedback, update_archive_after_version, write_iteration_log
+from card_plus.logging_utils import append_cost_event
 from card_plus.tpe_v2 import run_tpe_v2, should_skip_rl_for_tpe_v2
 
 
@@ -155,6 +156,18 @@ def run_dry_loop(
             version_score=record.version_score,
             best_idx=archive.best_index(),
             rolled_back=rolled_back,
+            token_counts={"prompt_tokens": 10, "completion_tokens": 20},
+        )
+        append_cost_event(
+            str(run_dir),
+            stage="dry_run_iteration",
+            iteration=it,
+            prompt_tokens=10,
+            completion_tokens=20,
+            llm_calls=1,
+            rl_steps=0 if not rl_ran else 100,
+            wall_s=0.0,
+            extra={"rl_ran": rl_ran, "rolled_back": rolled_back},
         )
         summaries.append(
             {

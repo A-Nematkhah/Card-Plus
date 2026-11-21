@@ -1,0 +1,29 @@
+{
+  "protocol": {
+    "same_gate": true,
+    "same_dataset": true,
+    "token_budget": 200000,
+    "rl_steps": 200000,
+    "n_seeds": 3
+  },
+  "models": [
+    {
+      "id": "primary",
+      "desc": "current CARD Coder"
+    },
+    {
+      "id": "reasoning",
+      "desc": "stronger reasoning model"
+    },
+    {
+      "id": "open_source",
+      "desc": "open-weight coder"
+    }
+  ],
+  "metrics": [
+    "final_success",
+    "llm_calls",
+    "tokens",
+    "iterations_to_best"
+  ]
+}

@@ -1,0 +1,191 @@
+{
+  "protocol": {
+    "n_train_seeds": 3,
+    "eval_episodes": 100,
+    "eval_seed": 1001,
+    "stats": "wilson_ci + paired_bootstrap via card_plus.stats_utils",
+    "baselines": [
+      "crowdnav_default",
+      "CARD",
+      "Text2Reward/Eureka-lite if available"
+    ]
+  },
+  "ablations": [
+    {
+      "code": "C0",
+      "desc": "CARD pure",
+      "flags": {},
+      "cli": [],
+      "train_seeds": [
+        0,
+        1,
+        2
+      ],
+      "eval_episodes": 100,
+      "eval_seed": 1001
+    },
+    {
+      "code": "C1",
+      "desc": "+ dataset gate",
+      "flags": {
+        "use_dataset_rescore": true,
+        "dataset_mode": "gate"
+      },
+      "cli": [
+        "--use_dataset_rescore",
+        "--dataset_mode",
+        "gate",
+        "--dataset_path",
+        "results/datasets/crowdnav_ds_h15"
+      ],
+      "train_seeds": [
+        0,
+        1,
+        2
+      ],
+      "eval_episodes": 100,
+      "eval_seed": 1001
+    },
+    {
+      "code": "C2",
+      "desc": "+ phase1 attribution/suicide",
+      "flags": {
+        "use_dataset_rescore": true,
+        "dataset_gate_attribution": true,
+        "dataset_suicide_probe": true
+      },
+      "cli": [
+        "--use_dataset_rescore",
+        "--dataset_gate_attribution",
+        "--dataset_suicide_probe",
+        "--dataset_path",
+        "results/datasets/crowdnav_ds_h15"
+      ],
+      "train_seeds": [
+        0,
+        1,
+        2
+      ],
+      "eval_episodes": 100,
+      "eval_seed": 1001
+    },
+    {
+      "code": "C3",
+      "desc": "+ dataset split train",
+      "flags": {
+        "use_dataset_rescore": true,
+        "dataset_split": "train"
+      },
+      "cli": [
+        "--use_dataset_rescore",
+        "--dataset_split",
+        "train",
+        "--dataset_path",
+        "results/datasets/crowdnav_ds_h15"
+      ],
+      "train_seeds": [
+        0,
+        1,
+        2
+      ],
+      "eval_episodes": 100,
+      "eval_seed": 1001
+    },
+    {
+      "code": "C4",
+      "desc": "+ coeff optimize",
+      "flags": {
+        "use_dataset_rescore": true,
+        "dataset_split": "train",
+        "dataset_optimize_coeffs": true,
+        "dataset_structure_prompt": true
+      },
+      "cli": [
+        "--use_dataset_rescore",
+        "--dataset_split",
+        "train",
+        "--dataset_optimize_coeffs",
+        "--dataset_structure_prompt",
+        "--dataset_path",
+        "results/datasets/crowdnav_ds_h15"
+      ],
+      "train_seeds": [
+        0,
+        1,
+        2
+      ],
+      "eval_episodes": 100,
+      "eval_seed": 1001
+    },
+    {
+      "code": "C5",
+      "desc": "+ asha screen / seed-aware rollback",
+      "flags": {
+        "use_dataset_rescore": true,
+        "use_asha_screen": true,
+        "asha_n_seeds": 2,
+        "use_archive_rollback": true,
+        "rollback_std_k": 1.0
+      },
+      "cli": [
+        "--use_dataset_rescore",
+        "--use_asha_screen",
+        "--asha_n_seeds",
+        "2",
+        "--use_archive_rollback",
+        "--rollback_std_k",
+        "1.0",
+        "--dataset_path",
+        "results/datasets/crowdnav_ds_h15"
+      ],
+      "train_seeds": [
+        0,
+        1,
+        2
+      ],
+      "eval_episodes": 100,
+      "eval_seed": 1001
+    },
+    {
+      "code": "C6",
+      "desc": "CARD+ full",
+      "flags": {
+        "use_dataset_rescore": true,
+        "dataset_gate_attribution": true,
+        "dataset_suicide_probe": true,
+        "dataset_split": "train",
+        "dataset_optimize_coeffs": true,
+        "use_asha_screen": true,
+        "use_archive_rollback": true,
+        "rollback_std_k": 1.0,
+        "use_hypothesis_loop": true,
+        "use_failure_cluster_feedback": true,
+        "dataset_max_diff_gate": true
+      },
+      "cli": [
+        "--use_dataset_rescore",
+        "--dataset_gate_attribution",
+        "--dataset_suicide_probe",
+        "--dataset_split",
+        "train",
+        "--dataset_optimize_coeffs",
+        "--use_asha_screen",
+        "--use_archive_rollback",
+        "--rollback_std_k",
+        "1.0",
+        "--use_hypothesis_loop",
+        "--use_failure_cluster_feedback",
+        "--dataset_max_diff_gate",
+        "--dataset_path",
+        "results/datasets/crowdnav_ds_h15"
+      ],
+      "train_seeds": [
+        0,
+        1,
+        2
+      ],
+      "eval_episodes": 100,
+      "eval_seed": 1001
+    }
+  ]
+}

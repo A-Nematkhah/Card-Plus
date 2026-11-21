@@ -1,0 +1,40 @@
+{
+  "n_rows": 7,
+  "ranking": [
+    {
+      "metric": "success_at_1",
+      "spearman": 0.873862897505303,
+      "n": 7.0
+    },
+    {
+      "metric": "success_at_3",
+      "spearman": 0.873862897505303,
+      "n": 7.0
+    },
+    {
+      "metric": "curve_slope_3",
+      "spearman": 0.873862897505303,
+      "n": 7.0
+    },
+    {
+      "metric": "combined",
+      "spearman": 0.8545454545454546,
+      "n": 7.0
+    },
+    {
+      "metric": "curve_auc",
+      "spearman": 0.6042039296394888,
+      "n": 7.0
+    },
+    {
+      "metric": "proxy_at_1",
+      "spearman": 0.19999999999999998,
+      "n": 7.0
+    }
+  ],
+  "baseline_metric": "success_at_1",
+  "go": true,
+  "best_metric": "success_at_1",
+  "best_spearman": 0.873862897505303,
+  "baseline_spearman": 0.873862897505303
+}

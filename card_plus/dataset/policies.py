@@ -27,6 +27,49 @@ def go_to_goal_policy(obs: np.ndarray, *, speed: float = 1.0) -> np.ndarray:
     return _clip_action((delta / n) * scale)
 
 
+def cautious_orca_policy(
+    obs: np.ndarray,
+    *,
+    speed: float = 0.7,
+    comfort: float = 0.8,
+    avoid_gain: float = 1.2,
+) -> np.ndarray:
+    """ORCA-like blend: go-to-goal, plus repulsion when min_sep is tight.
+
+    Uses ``obs[7]`` (min separation) and nearest-human relative ``obs[9:11]``.
+    Not a full ORCA solver — a lightweight cautious baseline for dataset v2.
+    """
+    obs = np.asarray(obs, dtype=np.float64).reshape(-1)
+    goal = go_to_goal_policy(obs, speed=speed)
+    if obs.shape[0] < 11:
+        return goal
+    min_sep = float(obs[7])
+    if min_sep >= float(comfort):
+        return goal
+    rel = obs[9:11]
+    n = float(np.linalg.norm(rel))
+    if n < 1e-8:
+        return goal
+    # Stronger avoidance as clearance shrinks below comfort.
+    w = float(np.clip((float(comfort) - min_sep) / max(float(comfort), 1e-6), 0.0, 1.0))
+    avoid = _clip_action((-rel / n) * float(avoid_gain))
+    blended = (1.0 - w) * goal.astype(np.float64) + w * avoid.astype(np.float64)
+    return _clip_action(blended)
+
+
+def make_cautious_orca_policy(
+    speed: float = 0.7,
+    comfort: float = 0.8,
+    avoid_gain: float = 1.2,
+) -> PolicyFn:
+    def _fn(obs: np.ndarray) -> np.ndarray:
+        return cautious_orca_policy(
+            obs, speed=speed, comfort=comfort, avoid_gain=avoid_gain
+        )
+
+    return _fn
+
+
 def make_go_to_goal_policy(speed: float = 1.0) -> PolicyFn:
     spd = float(speed)
 
@@ -119,6 +162,12 @@ def get_policy(name: str, **kwargs) -> PolicyFn:
         return make_go_to_goal_policy(speed=float(kwargs.get("speed", 1.0)))
     if key in ("slow_go_to_goal", "slow_goto"):
         return make_go_to_goal_policy(speed=float(kwargs.get("speed", 0.35)))
+    if key in ("cautious", "cautious_orca", "orca_like"):
+        return make_cautious_orca_policy(
+            speed=float(kwargs.get("speed", 0.7)),
+            comfort=float(kwargs.get("comfort", 0.8)),
+            avoid_gain=float(kwargs.get("avoid_gain", 1.2)),
+        )
     if key in ("flee", "flee_human", "flee_nearest_human"):
         return flee_nearest_human_policy
     if key in ("noisy_go_to_goal", "noisy_goto"):

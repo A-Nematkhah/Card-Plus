@@ -14,8 +14,17 @@ class CardPlusConfig:
     # archive / rollback
     score_last_k_evals: int = 3
     rollback_margin: float = 0.05
+    # Phase-4: rollback only if drop > margin + rollback_std_k * score_std.
+    rollback_std_k: float = 0.0
+    rollback_score_std: Optional[float] = None
+    use_asha_screen: bool = False
+    asha_n_seeds: int = 2
     score_final_version: bool = True
     max_diff_lines: int = 60
+    # Phase-5
+    use_hypothesis_loop: bool = False
+    use_failure_cluster_feedback: bool = False
+    dataset_max_diff_gate: bool = False
     # Last train step of this run (no further Coder query follows). None = unknown.
     card_plus_max_step: Optional[int] = None
     # sub-reward stats
@@ -45,6 +54,10 @@ class CardPlusConfig:
             self.use_archive_rollback
             or self.use_subreward_stats
             or self.use_tpe_v2
+            or self.use_asha_screen
+            or self.use_hypothesis_loop
+            or self.use_failure_cluster_feedback
+            or self.dataset_max_diff_gate
         )
 
 
@@ -65,6 +78,37 @@ def add_card_plus_arguments(parser: Any) -> None:
     g.add_argument("--use_tpe_v2", action="store_true", default=False)
     g.add_argument("--score_last_k_evals", type=int, default=3)
     g.add_argument("--rollback_margin", type=float, default=0.05)
+    g.add_argument(
+        "--rollback_std_k",
+        type=float,
+        default=0.0,
+        help="Phase-4: extra rollback margin = k * score_std (0=disabled)",
+    )
+    g.add_argument(
+        "--use_asha_screen",
+        action="store_true",
+        default=False,
+        help="Phase-4: multi-seed ASHA screen for top candidates",
+    )
+    g.add_argument("--asha_n_seeds", type=int, default=2)
+    g.add_argument(
+        "--use_hypothesis_loop",
+        action="store_true",
+        default=False,
+        help="Phase-5: hypothesis / confirm-reject feedback loop",
+    )
+    g.add_argument(
+        "--use_failure_cluster_feedback",
+        action="store_true",
+        default=False,
+        help="Phase-5: cluster failure_tags into Coder feedback",
+    )
+    g.add_argument(
+        "--dataset_max_diff_gate",
+        action="store_true",
+        default=False,
+        help="Phase-5: reject candidates whose diff vs best exceeds max_diff_lines",
+    )
     g.add_argument(
         "--score_final_version",
         action="store_true",

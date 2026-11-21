@@ -1,14 +1,11 @@
 """Offline dataset gate: keep only rewards that separate outcomes well.
 
-Composite (calibrated)::
-  composite = 0.10*offline_rank + 0.30*separation + 0.30*anti_hack
-              + 0.30*intra_scenario
+Composite (calibrated redesign v2)::
+  composite = 0.05*offline_rank + 0.15*separation + 0.65*anti_hack
+              + 0.15*intra_scenario
 
-where
-  offline_rank    = pair accuracies + progress_auc (often ~0.95–1; low weight)
-  separation      = steep soft mean-gap between outcome returns
-  anti_hack       = soft margins progress/success vs flee & orbit probes
-  intra_scenario  = within-scenario Spearman(rule ranks, reward ranks)
+Optional G2: ``--dataset_learned_judge PATH`` replaces composite with a signed
+learned judge mapped to ~(0,1) via ``gate_score`` (pair/anti_hack floors remain).
 
 Keep also requires pair floors, static anti-farm rules, and hard anti_hack probes.
 
@@ -26,6 +23,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from card_plus.dataset.anti_hack_probes import run_anti_hack_probes
+from card_plus.dataset.attribution import (
+    failed_pair_attributions,
+    format_attribution_block,
+)
+from card_plus.dataset.counterfactual import (
+    run_counterfactual,
+    write_counterfactual_report,
+)
 from card_plus.dataset.rescore import (
     PairAccuracy,
     RescoreReport,
@@ -34,6 +39,7 @@ from card_plus.dataset.rescore import (
     rescore_episodes_detailed,
 )
 from card_plus.dataset.reward_static import check_reward_code_static
+from card_plus.dataset.learned_judge import LearnedJudge, load_judge
 from card_plus.dataset.scoring import (
     build_calibrated_metrics,
     offline_rank_score,
@@ -44,6 +50,16 @@ PathLike = Union[str, Path]
 
 # Module-level cache: one-step processes are short-lived; helps within a step.
 _EPISODE_CACHE: Dict[str, list] = {}
+_JUDGE_CACHE: Dict[str, LearnedJudge] = {}
+
+
+def _load_judge_cached(path: str) -> Optional[LearnedJudge]:
+    p = str(path or "").strip()
+    if not p:
+        return None
+    if p not in _JUDGE_CACHE:
+        _JUDGE_CACHE[p] = load_judge(p)
+    return _JUDGE_CACHE[p]
 
 
 @dataclass
@@ -71,6 +87,23 @@ class DatasetGateConfig:
     dataset_mode: str = "gate"  # warn | gate
     thresholds: DatasetGateThresholds = field(default_factory=DatasetGateThresholds)
     tpe_v1_threshold: float = 0.8  # reported only; not part of keep rule
+    # Phase-1 flags (default off → golden bit-identical).
+    dataset_gate_attribution: bool = False
+    dataset_suicide_probe: bool = False
+    dataset_counterfactual: bool = False
+    # Phase-2: train/val scenario split (default all = legacy behavior).
+    dataset_split: str = "all"  # all | train | val
+    dataset_split_seed: int = 0
+    dataset_val_fraction: float = 0.25
+    # Phase-3: structure vs coefficient separation (default off).
+    dataset_optimize_coeffs: bool = False
+    dataset_coeff_method: str = "auto"  # auto | de | cma | random
+    dataset_coeff_max_evals: int = 40
+    dataset_structure_prompt: bool = False
+    dataset_max_diff_gate: bool = False
+    max_diff_lines: int = 60
+    # G2 learned judge (default off). Path to results/learned_judge_g2.json.
+    dataset_learned_judge: str = ""
 
     @property
     def enabled(self) -> bool:
@@ -122,6 +155,76 @@ def add_dataset_gate_arguments(parser: Any) -> None:
         default=5,
         help="Max rewrite attempts per candidate slot after a gate reject",
     )
+    g.add_argument(
+        "--dataset_gate_attribution",
+        action="store_true",
+        default=False,
+        help="Append per-sub-reward attribution on failed outcome pairs to gate feedback",
+    )
+    g.add_argument(
+        "--dataset_suicide_probe",
+        action="store_true",
+        default=False,
+        help="Require early-collision probe mean < long-wander mean",
+    )
+    g.add_argument(
+        "--dataset_counterfactual",
+        action="store_true",
+        default=False,
+        help="Write component drop/x2 counterfactual report next to gate JSON",
+    )
+    g.add_argument(
+        "--dataset_split",
+        type=str,
+        default="all",
+        choices=("all", "train", "val"),
+        help="Phase-2: score gate on train/val scenario split (default all)",
+    )
+    g.add_argument(
+        "--dataset_split_seed",
+        type=int,
+        default=0,
+        help="Seed for creating scenario_split.json when missing",
+    )
+    g.add_argument(
+        "--dataset_val_fraction",
+        type=float,
+        default=0.25,
+        help="Val fraction when creating scenario_split.json",
+    )
+    g.add_argument(
+        "--dataset_optimize_coeffs",
+        action="store_true",
+        default=False,
+        help="Phase-3: after a candidate passes, tune numeric coeffs on train composite",
+    )
+    g.add_argument(
+        "--dataset_coeff_method",
+        type=str,
+        default="auto",
+        choices=("auto", "de", "cma", "random"),
+        help="Optimizer for --dataset_optimize_coeffs",
+    )
+    g.add_argument(
+        "--dataset_coeff_max_evals",
+        type=int,
+        default=40,
+        help="Max objective evals for coefficient optimization",
+    )
+    g.add_argument(
+        "--dataset_structure_prompt",
+        action="store_true",
+        default=False,
+        help="Ask Coder for structure/placeholders; coeffs tuned offline",
+    )
+    # --dataset_max_diff_gate / --max_diff_lines live in card_plus.config
+    # (add_card_plus_arguments); do not re-register here.
+    g.add_argument(
+        "--dataset_learned_judge",
+        type=str,
+        default="",
+        help="G2: path to learned_judge JSON (signed offline→online proxy). Default off.",
+    )
 
 
 def dataset_gate_from_args(args: Any) -> DatasetGateConfig:
@@ -149,6 +252,23 @@ def dataset_gate_from_args(args: Any) -> DatasetGateConfig:
         dataset_path=str(getattr(args, "dataset_path", "") or ""),
         dataset_mode=str(getattr(args, "dataset_mode", "gate")),
         thresholds=th,
+        dataset_gate_attribution=bool(getattr(args, "dataset_gate_attribution", False)),
+        dataset_suicide_probe=bool(getattr(args, "dataset_suicide_probe", False)),
+        dataset_counterfactual=bool(getattr(args, "dataset_counterfactual", False)),
+        dataset_split=str(getattr(args, "dataset_split", "all") or "all"),
+        dataset_split_seed=int(getattr(args, "dataset_split_seed", 0) or 0),
+        dataset_val_fraction=float(getattr(args, "dataset_val_fraction", 0.25) or 0.25),
+        dataset_optimize_coeffs=bool(getattr(args, "dataset_optimize_coeffs", False)),
+        dataset_coeff_method=str(getattr(args, "dataset_coeff_method", "auto") or "auto"),
+        dataset_coeff_max_evals=int(getattr(args, "dataset_coeff_max_evals", 40) or 40),
+        dataset_structure_prompt=bool(getattr(args, "dataset_structure_prompt", False)),
+        dataset_max_diff_gate=bool(getattr(args, "dataset_max_diff_gate", False)),
+        max_diff_lines=int(
+            getattr(args, "dataset_max_diff_lines", None)
+            or getattr(args, "max_diff_lines", 60)
+            or 60
+        ),
+        dataset_learned_judge=str(getattr(args, "dataset_learned_judge", "") or ""),
     )
 
 
@@ -179,6 +299,7 @@ class DatasetGateResult:
     reasons: List[str]
     report: RescoreReport
     metrics: Dict[str, float]
+    attribution_text: str = ""
 
     def feedback_text(self) -> str:
         status = "PASS" if self.keep else "FAIL"
@@ -195,14 +316,32 @@ class DatasetGateResult:
             f"  progress_auc={self.metrics.get('progress_auc', float('nan')):.4f}",
             f"  tpe_v1_rate={self.metrics.get('tpe_v1_rate', float('nan'))}",
         ]
+        # Floor gaps help diagnose miscalibrated thresholds.
+        for key, gap_key in (
+            ("success/collided", "gap_success_collided"),
+            ("success/timeout", "gap_success_timeout"),
+            ("timeout/collided", "gap_timeout_collided"),
+            ("progress_auc", "gap_progress_auc"),
+        ):
+            if gap_key in self.metrics:
+                lines.append(
+                    f"  {key} gap_to_floor={self.metrics.get(gap_key, float('nan')):.4f}"
+                )
         if "flee_mean" in self.metrics:
             lines.append(
                 f"  probes: progress={self.metrics.get('progress_mean', float('nan')):.4f} "
                 f"flee={self.metrics.get('flee_mean', float('nan')):.4f} "
                 f"orbit={self.metrics.get('orbit_mean', float('nan')):.4f}"
             )
+        if "suicide_mean" in self.metrics:
+            lines.append(
+                f"  suicide_probe: suicide={self.metrics.get('suicide_mean', float('nan')):.4f} "
+                f"wander={self.metrics.get('wander_mean', float('nan')):.4f}"
+            )
         if self.reasons:
             lines.append("  failures: " + "; ".join(self.reasons))
+        if self.attribution_text:
+            lines.append(self.attribution_text.rstrip())
         if self.skip_rl:
             lines.append(
                 "  RL skipped: reward did not meet calibrated keep criteria. "
@@ -220,6 +359,7 @@ class DatasetGateResult:
             "reasons": list(self.reasons),
             "metrics": dict(self.metrics),
             "report": self.report.to_dict(),
+            "attribution_text": self.attribution_text,
         }
 
 
@@ -293,11 +433,24 @@ def evaluate_keep(
     return ok, reasons, rank, metrics
 
 
-def _load_episodes_cached(dataset_path: PathLike) -> list:
-    key = str(Path(dataset_path).resolve())
+def _load_episodes_cached(
+    dataset_path: PathLike,
+    *,
+    split: str = "all",
+    split_seed: int = 0,
+    val_fraction: float = 0.25,
+) -> list:
+    key = (
+        f"{Path(dataset_path).resolve()}|split={split}|seed={split_seed}|vf={val_fraction}"
+    )
     if key not in _EPISODE_CACHE:
-        logger.info("Loading dataset episodes from %s", key)
-        _EPISODE_CACHE[key] = load_dataset_episodes(key)
+        logger.info("Loading dataset episodes from %s (%s)", dataset_path, split)
+        _EPISODE_CACHE[key] = load_dataset_episodes(
+            dataset_path,
+            split=split,
+            split_seed=split_seed,
+            val_fraction=val_fraction,
+        )
     return _EPISODE_CACHE[key]
 
 
@@ -368,7 +521,12 @@ def run_dataset_gate(
 
     reward_fn = load_reward_fn_from_code(code_text)
 
-    episodes = _load_episodes_cached(path)
+    episodes = _load_episodes_cached(
+        path,
+        split=str(cfg.dataset_split or "all"),
+        split_seed=int(cfg.dataset_split_seed),
+        val_fraction=float(cfg.dataset_val_fraction),
+    )
     report, labeled, returns = rescore_episodes_detailed(
         episodes,
         reward_fn,
@@ -377,22 +535,60 @@ def run_dataset_gate(
     )
     _pairs_ok, reasons, _rank, _pair_metrics = evaluate_pair_floors(report, th)
 
-    probe = run_anti_hack_probes(reward_fn)
+    probe = run_anti_hack_probes(
+        reward_fn, use_suicide_probe=bool(cfg.dataset_suicide_probe)
+    )
     if not probe.ok:
         reasons = list(reasons) + [f"anti_hack: {r}" for r in probe.reasons]
 
+    judge = _load_judge_cached(str(cfg.dataset_learned_judge or ""))
     composite, metrics = build_calibrated_metrics(
-        report, labeled, returns, probe.metrics
+        report, labeled, returns, probe.metrics, learned_judge=judge
+    )
+    if judge is not None:
+        metrics["g2_judge"] = 1.0
+    # Threshold gap diagnostics (value - floor); negative ⇒ below floor.
+    metrics["gap_success_collided"] = float(
+        _pair_metrics.get("success/collided", float("nan")) - th.min_success_collided
+    )
+    metrics["gap_success_timeout"] = float(
+        _pair_metrics.get("success/timeout", float("nan")) - th.min_success_timeout
+    )
+    metrics["gap_timeout_collided"] = float(
+        _pair_metrics.get("timeout/collided", float("nan")) - th.min_timeout_collided
+    )
+    metrics["gap_progress_auc"] = float(
+        _pair_metrics.get("progress_auc", float("nan")) - th.min_progress_auc
     )
 
-    if composite < th.min_composite:
+    # G2 gate_score is a z-sigmoid (~0.5 at train mean); absolute 0.75 floor
+    # would reject most rewards. Rank via composite; keep floors on pairs/hack.
+    if judge is None and composite < th.min_composite:
         reasons.append(f"composite={composite:.4f} < {th.min_composite:.2f}")
+    elif judge is not None:
+        metrics["composite_floor_skipped"] = 1.0
     ah = metrics.get("anti_hack", float("nan"))
     if ah == ah and ah < th.min_anti_hack:
         reasons.append(f"anti_hack={ah:.4f} < {th.min_anti_hack:.2f}")
     sep = metrics.get("separation", float("nan"))
     if sep == sep and sep < th.min_separation:
         reasons.append(f"separation={sep:.4f} < {th.min_separation:.2f}")
+
+    attribution_text = ""
+    if cfg.dataset_gate_attribution and reasons:
+        floors = {
+            "success/collided": th.min_success_collided,
+            "success/timeout": th.min_success_timeout,
+            "timeout/collided": th.min_timeout_collided,
+        }
+        attrs = failed_pair_attributions(
+            labeled,
+            reward_fn,
+            pair_metrics=_pair_metrics,
+            floors=floors,
+        )
+        attribution_text = format_attribution_block(attrs)
+        metrics["attribution_n_pairs"] = float(len(attrs))
 
     keep = len(reasons) == 0
     skip_rl = bool(mode == "gate" and not keep)
@@ -404,6 +600,7 @@ def run_dataset_gate(
         reasons=reasons,
         report=report,
         metrics=metrics,
+        attribution_text=attribution_text,
     )
 
     if run_dir is not None:
@@ -417,6 +614,11 @@ def run_dataset_gate(
             json.dumps(_json_safe(result.to_dict()), indent=2), encoding="utf-8"
         )
         logger.info("Wrote dataset gate report to %s", out)
+        if cfg.dataset_counterfactual:
+            cf = run_counterfactual(labeled, reward_fn)
+            cf_path = out_dir / f"dataset_gate{tag}_counterfactual.json"
+            write_counterfactual_report(cf, cf_path)
+            logger.info("Wrote counterfactual report to %s", cf_path)
 
     print(
         f"[dataset_gate] keep={keep} skip_rl={skip_rl} composite={composite:.4f} "
@@ -478,7 +680,16 @@ def load_dataset_gate_result_json(
     mode_s = str(mode or data.get("mode") or "gate")
     keep = bool(data.get("keep", False))
     skip_rl = bool(data.get("skip_rl", mode_s == "gate" and not keep))
-    metrics = {str(k): float(v) if v is not None else float("nan") for k, v in (data.get("metrics") or {}).items()}
+    raw_metrics = data.get("metrics") or {}
+    metrics: Dict[str, float] = {}
+    for k, v in raw_metrics.items():
+        if v is None:
+            metrics[str(k)] = float("nan")
+        else:
+            try:
+                metrics[str(k)] = float(v)
+            except (TypeError, ValueError):
+                continue
     return DatasetGateResult(
         keep=keep,
         skip_rl=skip_rl,
@@ -487,4 +698,5 @@ def load_dataset_gate_result_json(
         reasons=[str(r) for r in (data.get("reasons") or [])],
         report=report,
         metrics=metrics,
+        attribution_text=str(data.get("attribution_text") or ""),
     )

@@ -297,9 +297,10 @@ def select_hard_scenarios(
         return []
     pool = list(specs)
     sel = str(selection or "hardest").strip().lower()
-    if sel not in ("hardest", "spread", "balanced"):
+    if sel not in ("hardest", "spread", "balanced", "balanced_dense"):
         raise ValueError(
-            f"selection must be 'hardest', 'spread', or 'balanced', got {selection!r}"
+            f"selection must be 'hardest', 'spread', 'balanced', or 'balanced_dense', "
+            f"got {selection!r}"
         )
 
     preferred = sorted(
@@ -318,10 +319,14 @@ def select_hard_scenarios(
     if len(preferred) >= keep:
         if sel == "spread":
             return [preferred[i] for i in _spread_indices(len(preferred), keep)]
-        if sel == "balanced":
-            # ~50% easy / 30% medium / 20% hard for usable S/C/T gate support.
-            n_easy = max(1, int(round(keep * 0.50)))
-            n_hard = max(1, int(round(keep * 0.20)))
+        if sel in ("balanced", "balanced_dense"):
+            # balanced: ~50/30/20. balanced_dense: ~60/25/15 (more successes at H>=15).
+            if sel == "balanced_dense":
+                easy_frac, hard_frac = 0.60, 0.15
+            else:
+                easy_frac, hard_frac = 0.50, 0.20
+            n_easy = max(1, int(round(keep * easy_frac)))
+            n_hard = max(1, int(round(keep * hard_frac)))
             n_med = max(0, keep - n_easy - n_hard)
             quotas = {"easy": n_easy, "medium": n_med, "hard": n_hard}
             buckets = {"easy": [], "medium": [], "hard": []}

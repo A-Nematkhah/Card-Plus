@@ -1,0 +1,28 @@
+{
+  "features": [
+    "offline_rank",
+    "separation",
+    "anti_hack",
+    "intra_scenario",
+    "progress_mean",
+    "sep_scale"
+  ],
+  "weights": [
+    -31.382542994281266,
+    21.151369442307416,
+    0.0,
+    -29.854832387281764,
+    -0.6162298360408022,
+    0.0
+  ],
+  "bias": 38.117396553368415,
+  "score_mean": -6.090366306515144e-15,
+  "score_std": 1.498926314393709,
+  "spearman_train": 0.9910312089651149,
+  "spearman_loo": 0.8108437164260032,
+  "n": 7,
+  "target_name": "online_proxy",
+  "notes": [
+    "train Spearman=0.991; LOO Spearman=0.811 (N=7). Treat LOO as honesty check; do not claim Phase-2 Go from train alone."
+  ]
+}

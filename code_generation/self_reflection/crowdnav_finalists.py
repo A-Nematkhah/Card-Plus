@@ -22,6 +22,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from card_plus.archive import RewardArchive, VersionRecord, extract_success_curve
 from card_plus.config import add_card_plus_arguments
 from card_plus.dataset.gate import _json_safe, add_dataset_gate_arguments
+from code_generation.self_reflection.crowdnav_exp_one_step import (
+    resolve_crowdnav_algo,
+    train_and_eval,
+)
 from code_generation.self_reflection.utils import Logger, print_with_color
 
 LOW_SCORE_SPREAD = 0.05
@@ -67,16 +71,27 @@ def select_top_versions(
     return ranked[: min(k, len(ranked))]
 
 
-def short_checkpoint_path(log_path: Path, iteration: int, seed: int) -> Optional[Path]:
-    """CARD step ``iteration`` trains ``code_{iteration-1}``.
-
-    PPO/GST checkpoints are ``.pt`` only. Legacy SAC ``.zip`` files are ignored
-    so callers do not silently "resume" into a cold start.
-    """
+def short_checkpoint_path(
+    log_path: Path, iteration: int, seed: int, *, algo: str = "ppo"
+) -> Optional[Path]:
+    """CARD step ``iteration`` trains ``code_{iteration-1}``."""
     code_step = int(iteration) - 1
     if code_step < 0:
         return None
     tb = log_path / f"code_{code_step}" / f"seed_{seed}" / "tensorboard_log"
+    if algo == "sac":
+        for rel in (
+            Path("latest_model.zip"),
+            Path("latest_model"),
+            Path("eval") / "best_model.zip",
+        ):
+            p = tb / rel
+            if p.is_file():
+                return p
+            z = p.with_suffix(".zip")
+            if z.is_file():
+                return z
+        return None
     for rel in (
         Path("latest_model.pt"),
         Path("eval") / "best_model.pt",
@@ -87,15 +102,23 @@ def short_checkpoint_path(log_path: Path, iteration: int, seed: int) -> Optional
     return None
 
 
-def resolve_finalist_model_path(code_dir: Path, seed: int) -> Optional[Path]:
-    """Prefer PPO ``.pt`` artifacts written under a finalist code dir."""
+def resolve_finalist_model_path(
+    code_dir: Path, seed: int, *, algo: str = "ppo"
+) -> Optional[Path]:
+    """Prefer backend-native checkpoint under a finalist code dir."""
     tb = code_dir / f"seed_{seed}" / "tensorboard_log"
+    if algo == "sac":
+        for rel in (
+            Path("eval") / "best_model.zip",
+            Path("latest_model.zip"),
+        ):
+            p = tb / rel
+            if p.is_file():
+                return p
+        return None
     for rel in (
         Path("eval") / "best_model.pt",
         Path("latest_model.pt"),
-        # Legacy SAC leftovers (held-out PPO loader cannot use these).
-        Path("eval") / "best_model.zip",
-        Path("latest_model.zip"),
     ):
         p = tb / rel
         if p.is_file():
@@ -112,45 +135,85 @@ def held_out_eval(
     n_episodes: int,
 ) -> dict:
     """Deterministic rollout eval; seed must differ from training seed."""
-    from code_generation.self_reflection.crowdnav_pp_env import make_dual_view_env
-    from code_generation.self_reflection.crowdnav_ppo_train import load_policy_adapter
-
-    model, _vec = load_policy_adapter(
-        model_path, task_name=str(getattr(args, "task_name", "circle-crossing-v0")), seed=int(eval_seed)
-    )
-    _vec.close()
-    env = make_dual_view_env(
-        str(getattr(args, "task_name", "circle-crossing-v0")),
-        seed=int(eval_seed),
-        phase="test",
-        use_ground_truth_reward=False,
-        reward_code=reward_code,
-        max_episode_steps=int(getattr(args, "max_episode_steps", 200)),
-    )
+    algo = resolve_crowdnav_algo(args)
     successes: List[float] = []
     returns: List[float] = []
     lengths: List[int] = []
-    try:
-        for _ in range(int(n_episodes)):
-            model.reset_hidden()
-            obs = env.reset()
-            done = False
-            ep_ret = 0.0
-            steps = 0
-            success = 0.0
-            while not done and steps < int(getattr(args, "max_episode_steps", 200)):
-                action, _ = model.predict(obs, deterministic=True)
-                obs, reward, done, info = env.step(action)
-                ep_ret += float(reward)
-                steps += 1
-                success = float(info.get("success", info.get("is_success", 0.0)) or 0.0)
-                if success >= 1.0:
-                    done = True
-            successes.append(success)
-            returns.append(ep_ret)
-            lengths.append(steps)
-    finally:
-        env.close()
+
+    if algo == "sac":
+        from stable_baselines3 import SAC
+
+        from code_generation.self_reflection.crowdnav_env_utils import make_env
+
+        model = SAC.load(model_path)
+        env = make_env(
+            args,
+            seed=int(eval_seed),
+            max_episode_steps=int(getattr(args, "max_episode_steps", 200)),
+            record_dir="logs/videos",
+            is_eval=True,
+            use_ground_truth_reward=False,
+            reward_code=reward_code,
+        )()
+        try:
+            for _ in range(int(n_episodes)):
+                obs = env.reset()
+                done = False
+                ep_ret = 0.0
+                steps = 0
+                success = 0.0
+                while not done and steps < int(getattr(args, "max_episode_steps", 200)):
+                    action, _ = model.predict(obs, deterministic=True)
+                    obs, reward, done, info = env.step(action)
+                    ep_ret += float(reward)
+                    steps += 1
+                    success = float(info.get("success", info.get("is_success", 0.0)) or 0.0)
+                    if success >= 1.0:
+                        done = True
+                successes.append(success)
+                returns.append(ep_ret)
+                lengths.append(steps)
+        finally:
+            env.close()
+    else:
+        from code_generation.self_reflection.crowdnav_pp_env import make_dual_view_env
+        from code_generation.self_reflection.crowdnav_ppo_train import load_policy_adapter
+
+        model, _vec = load_policy_adapter(
+            model_path,
+            task_name=str(getattr(args, "task_name", "circle-crossing-v0")),
+            seed=int(eval_seed),
+        )
+        _vec.close()
+        env = make_dual_view_env(
+            str(getattr(args, "task_name", "circle-crossing-v0")),
+            seed=int(eval_seed),
+            phase="test",
+            use_ground_truth_reward=False,
+            reward_code=reward_code,
+            max_episode_steps=int(getattr(args, "max_episode_steps", 200)),
+        )
+        try:
+            for _ in range(int(n_episodes)):
+                model.reset_hidden()
+                obs = env.reset()
+                done = False
+                ep_ret = 0.0
+                steps = 0
+                success = 0.0
+                while not done and steps < int(getattr(args, "max_episode_steps", 200)):
+                    action, _ = model.predict(obs, deterministic=True)
+                    obs, reward, done, info = env.step(action)
+                    ep_ret += float(reward)
+                    steps += 1
+                    success = float(info.get("success", info.get("is_success", 0.0)) or 0.0)
+                    if success >= 1.0:
+                        done = True
+                successes.append(success)
+                returns.append(ep_ret)
+                lengths.append(steps)
+        finally:
+            env.close()
 
     succ_arr = np.asarray(successes, dtype=float)
     return {
@@ -196,12 +259,21 @@ def main() -> None:
     parser.add_argument("--trajectory_num", type=int, default=20)
     parser.add_argument("--llm_model_name", type=str, default="grok-4.3")
     parser.add_argument("--exp_name", type=str, default="card")
+    parser.add_argument(
+        "--algo",
+        type=str,
+        default=None,
+        choices=["sac", "ppo", "flat", "gst", "crowdnav_pp"],
+        help="Must match the CARD short-train backend (default: CARD_ALGO / ppo).",
+    )
     parser.add_argument("--use_wandb", action="store_true")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--entity", type=str, default="")
     add_card_plus_arguments(parser)
     add_dataset_gate_arguments(parser)
     args = parser.parse_args()
+    algo = resolve_crowdnav_algo(args)
+    args.algo = algo
 
     if int(args.final_eval_seed) == int(args.seed):
         raise SystemExit(
@@ -213,9 +285,6 @@ def main() -> None:
     logger = Logger(filename=str(std_file))
     sys.stdout = logger
     sys.stderr = logger
-
-    # Heavy imports only when actually continuing training (keeps unit tests light).
-    from code_generation.self_reflection.crowdnav_exp_one_step import train_and_eval
 
     archive = RewardArchive(run_dir=str(log_path))
     finalists = select_top_versions(archive.versions, args.top_k)
@@ -229,7 +298,7 @@ def main() -> None:
     short_done = int(args.short_train_steps)
     extra = max(0, target - short_done)
     print_with_color(
-        f"SH finalists top_k={args.top_k} target={target} short={short_done} "
+        f"SH finalists algo={algo} top_k={args.top_k} target={target} short={short_done} "
         f"continue=+{extra}: "
         + ", ".join(
             f"iter={v.iteration} score={v.version_score} peak={_peak_success(v):.2f}"
@@ -254,7 +323,9 @@ def main() -> None:
         with specific_path.open("w", encoding="utf-8", newline="\n") as f:
             f.write(v.reward_code)
 
-        ckpt = short_checkpoint_path(log_path, int(v.iteration), int(args.seed))
+        ckpt = short_checkpoint_path(
+            log_path, int(v.iteration), int(args.seed), algo=algo
+        )
         if ckpt is None:
             # Same total budget as resume path (short+extra == target), but cold start.
             print_with_color(
@@ -275,6 +346,49 @@ def main() -> None:
             )
             continue_curve = extract_success_curve(learning_result) or []
             resumed = False
+        elif algo == "sac":
+            tb = code_dir / f"seed_{args.seed}" / "tensorboard_log"
+            eval_dir = tb / "eval"
+            eval_dir.mkdir(parents=True, exist_ok=True)
+            dest_model = tb / "latest_model.zip"
+            shutil.copy2(ckpt, dest_model)
+            short_eval = (
+                log_path
+                / f"code_{int(v.iteration) - 1}"
+                / f"seed_{args.seed}"
+                / "tensorboard_log"
+                / "eval"
+                / "evaluations.npz"
+            )
+            if short_eval.is_file():
+                shutil.copy2(short_eval, eval_dir / "evaluations.npz")
+            print_with_color(
+                f"Finalist iter={v.iteration}: resume {ckpt.name} +{extra} -> {code_dir}",
+                "BLUE",
+            )
+            if extra <= 0:
+                learning_result = {}
+                if (eval_dir / "evaluations.npz").is_file():
+                    raw = np.load(eval_dir / "evaluations.npz")
+                    learning_result = {k: raw[k] for k in raw.files}
+                continue_curve = extract_success_curve(learning_result) or list(
+                    v.success_curve
+                )
+                resumed = True
+            else:
+                learning_result, _, _ = train_and_eval(
+                    args=args,
+                    seed=args.seed,
+                    step=int(v.iteration),
+                    use_ground_truth_reward=False,
+                    specific_code=v.reward_code,
+                    specific_code_path=str(specific_path),
+                    load_model=False,
+                    resume_model_path=str(dest_model),
+                    train_steps=int(extra),
+                )
+                continue_curve = extract_success_curve(learning_result) or []
+                resumed = True
         else:
             # Seed finalist TB dir with short PPO checkpoint (and eval history if present).
             from code_generation.self_reflection.crowdnav_ppo_train import (
@@ -357,14 +471,7 @@ def main() -> None:
         full_curve = continue_curve if continue_curve else short_curve
         final_s = float(full_curve[-1]) if full_curve else 0.0
         peak_s = float(max(full_curve)) if full_curve else 0.0
-        resolved = resolve_finalist_model_path(code_dir, int(args.seed))
-        if resolved is not None and resolved.suffix.lower() == ".zip":
-            print_with_color(
-                f"Finalist iter={v.iteration}: only legacy .zip model found ({resolved.name}); "
-                "held-out PPO eval needs .pt",
-                "YELLOW",
-            )
-            resolved = None
+        resolved = resolve_finalist_model_path(code_dir, int(args.seed), algo=algo)
         model_for_eval = str(resolved) if resolved is not None else ""
 
         entry = {
@@ -400,14 +507,19 @@ def main() -> None:
                 json.dumps(_json_safe(entry), indent=2), encoding="utf-8"
             )
             if best_model_path and Path(best_model_path).is_file():
-                shutil.copy2(best_model_path, best_dir / "best_model.pt")
+                suffix = ".zip" if algo == "sac" else ".pt"
+                shutil.copy2(best_model_path, best_dir / f"best_model{suffix}")
 
     final_eval = None
+    best_suffix = Path(best_model_path).suffix.lower() if best_model_path else ""
     if (
         best_model_path
         and best_reward_code
         and Path(best_model_path).is_file()
-        and Path(best_model_path).suffix.lower() == ".pt"
+        and (
+            (algo == "sac" and best_suffix == ".zip")
+            or (algo == "ppo" and best_suffix == ".pt")
+        )
     ):
         print_with_color(
             f"Held-out final eval: model={best_model_path} "

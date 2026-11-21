@@ -141,6 +141,38 @@ def _orbit_steps(n: int = 20) -> List[Tuple[np.ndarray, np.ndarray, Optional[np.
     return out
 
 
+def _early_collision_steps(n: int = 5) -> List[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]]:
+    """Short traj that ends in collision (min_sep < 0) around step 5."""
+    gx, gy = 5.0, 0.0
+    out: List[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]] = []
+    pre = None
+    for i in range(n):
+        px = -2.0 + 0.2 * i
+        # Negative separation ⇒ collided in CrowdNav convention used by rewards.
+        min_sep = -0.15 if i == n - 1 else 0.4
+        obs = _make_obs(px, 0.0, gx, gy, min_sep=min_sep, vx=0.5, vy=0.0)
+        action = np.asarray([0.5, 0.0], dtype=np.float64)
+        out.append((action, obs, pre))
+        pre = obs
+    return out
+
+
+def _long_wander_steps(n: int = 200) -> List[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]]:
+    """Long loiter with no goal progress (suicide-vs-wander contrast)."""
+    gx, gy = 5.0, 0.0
+    out: List[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]] = []
+    pre = None
+    for i in range(n):
+        # Stay far from goal; modest clearance; tiny motion.
+        px = -4.0 + 0.01 * np.sin(0.1 * i)
+        py = 0.2 * np.cos(0.07 * i)
+        obs = _make_obs(px, py, gx, gy, min_sep=1.0, vx=0.05, vy=0.0)
+        action = np.asarray([0.05, 0.0], dtype=np.float64)
+        out.append((action, obs, pre))
+        pre = obs
+    return out
+
+
 @dataclass
 class AntiHackProbeResult:
     ok: bool
@@ -155,15 +187,51 @@ class AntiHackProbeResult:
             f"  flee_mean={self.metrics.get('flee_mean', float('nan')):.4f}",
             f"  orbit_mean={self.metrics.get('orbit_mean', float('nan')):.4f}",
         ]
+        if "suicide_mean" in self.metrics:
+            lines.append(
+                f"  suicide_mean={self.metrics.get('suicide_mean', float('nan')):.4f} "
+                f"wander_mean={self.metrics.get('wander_mean', float('nan')):.4f}"
+            )
         if self.reasons:
             lines.append("  failures: " + "; ".join(self.reasons))
         return lines
+
+
+def run_suicide_probe(
+    reward_fn: RewardFn,
+    *,
+    margin: float = 0.0,
+) -> AntiHackProbeResult:
+    """Early-collision episode return must be worse than long no-progress return.
+
+    Compares **sums** (RL objective). Mean per-step can hide the hack: a tiny
+    collision terminal plus large per-step stall makes crashing early look better
+    in cumulative return while means stay similar.
+    """
+    suicide_m, suicide_s = _score_traj(reward_fn, _early_collision_steps())
+    wander_m, wander_s = _score_traj(reward_fn, _long_wander_steps())
+    metrics = {
+        "suicide_mean": suicide_m,
+        "wander_mean": wander_m,
+        "suicide_sum": suicide_s,
+        "wander_sum": wander_s,
+        "suicide_margin": float(margin),
+    }
+    reasons: List[str] = []
+    if not (suicide_s < wander_s - margin):
+        reasons.append(
+            f"suicide_sum={suicide_s:.4f} not < wander_sum={wander_s:.4f}-{margin:.2f} "
+            "(early collision preferred over long no-progress wait; "
+            "collision penalty should exceed horizon * per-step penalty)"
+        )
+    return AntiHackProbeResult(ok=len(reasons) == 0, reasons=reasons, metrics=metrics)
 
 
 def run_anti_hack_probes(
     reward_fn: RewardFn,
     *,
     margin: float = 0.05,
+    use_suicide_probe: bool = False,
 ) -> AntiHackProbeResult:
     """Require approaching-goal trajectories to beat flee/orbit hacks.
 
@@ -207,4 +275,9 @@ def run_anti_hack_probes(
             f"orbit_mean={orbit_m:.4f} not worse than progress_mean={progress_m:.4f}+{margin:.2f} "
             "(reward prefers high-clearance loitering over approaching the goal)"
         )
+    if use_suicide_probe:
+        suicide = run_suicide_probe(reward_fn)
+        metrics.update(suicide.metrics)
+        if not suicide.ok:
+            reasons.extend(suicide.reasons)
     return AntiHackProbeResult(ok=len(reasons) == 0, reasons=reasons, metrics=metrics)

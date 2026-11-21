@@ -442,8 +442,18 @@ def rescore_paths(
     return rescore_episodes(episodes, reward_fn, **kwargs)
 
 
-def load_dataset_episodes(dataset_dir: PathLike) -> List[Episode]:
-    """Load all episodes listed in ``index.json`` (or every ``episodes/*`` file)."""
+def load_dataset_episodes(
+    dataset_dir: PathLike,
+    *,
+    split: str = "all",
+    split_seed: int = 0,
+    val_fraction: float = 0.25,
+    force_resplit: bool = False,
+) -> List[Episode]:
+    """Load episodes listed in ``index.json`` (or every ``episodes/*`` file).
+
+    ``split`` in {all, train, val}: when train/val, uses/creates ``scenario_split.json``.
+    """
     root = Path(dataset_dir)
     index_path = root / "index.json"
     paths: List[Path] = []
@@ -458,6 +468,21 @@ def load_dataset_episodes(dataset_dir: PathLike) -> List[Episode]:
     # Warm gate arrays/labels once so candidate retries avoid repeated stacking.
     for ep in episodes:
         ensure_episode_gate_arrays(ep)
+    which = str(split or "all").lower()
+    if which not in ("all", "*", "full"):
+        from card_plus.dataset.split import (
+            ensure_dataset_split,
+            filter_episodes_by_split,
+        )
+
+        split_doc = ensure_dataset_split(
+            root,
+            episodes,
+            val_fraction=float(val_fraction),
+            seed=int(split_seed),
+            force=bool(force_resplit),
+        )
+        episodes = filter_episodes_by_split(episodes, split_doc, which)
     return episodes
 
 

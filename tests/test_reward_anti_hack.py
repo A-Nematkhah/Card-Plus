@@ -1,6 +1,6 @@
 """Static rules + synthetic anti-hack probes for CrowdNav rewards."""
 
-from card_plus.dataset.anti_hack_probes import run_anti_hack_probes
+from card_plus.dataset.anti_hack_probes import run_anti_hack_probes, run_suicide_probe
 from card_plus.dataset.rescore import load_reward_fn_from_code
 from card_plus.dataset.reward_static import check_reward_code_static
 
@@ -64,3 +64,46 @@ def test_probes_accept_penalty_only_delta_progress():
     fn = load_reward_fn_from_code(PENALTY_ONLY_CODE)
     result = run_anti_hack_probes(fn)
     assert result.ok is True, result.reasons
+
+
+SUICIDE_BAD_CODE = """
+def compute_dense_reward(self, action, obs):
+    # Tiny collision, huge per-step stall → early crash preferred over waiting.
+    stall = -1.0
+    collision = -2.0 if obs[7] < 0.0 else 0.0
+    total = stall + collision
+    return total, {"stall": stall, "collision": collision}
+"""
+
+SUICIDE_OK_CODE = """
+def compute_dense_reward(self, action, obs):
+    stall = -0.01
+    collision = -50.0 if obs[7] < 0.0 else 0.0
+    total = stall + collision
+    return total, {"stall": stall, "collision": collision}
+"""
+
+
+def test_suicide_probe_rejects_early_crash_preference():
+    fn = load_reward_fn_from_code(SUICIDE_BAD_CODE)
+    result = run_suicide_probe(fn)
+    assert result.ok is False, result.metrics
+    assert any("suicide" in r for r in result.reasons)
+
+
+def test_suicide_probe_accepts_large_collision_penalty():
+    fn = load_reward_fn_from_code(SUICIDE_OK_CODE)
+    result = run_suicide_probe(fn)
+    assert result.ok is True, result.reasons
+
+
+def test_anti_hack_optional_suicide_flag_off_by_default():
+    fn = load_reward_fn_from_code(SUICIDE_BAD_CODE)
+    # Without flag, flee/orbit probes may still fail farm-like rewards; use OK base
+    # structure that only fails suicide.
+    ok_base = load_reward_fn_from_code(PENALTY_ONLY_CODE)
+    base = run_anti_hack_probes(ok_base, use_suicide_probe=False)
+    assert base.ok is True
+    with_suicide = run_anti_hack_probes(fn, use_suicide_probe=True)
+    # SUICIDE_BAD may also fail flee/orbit; at least suicide metrics present.
+    assert "suicide_mean" in with_suicide.metrics

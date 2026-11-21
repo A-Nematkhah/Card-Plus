@@ -1,0 +1,12 @@
+{
+  "n": 7,
+  "best_weights": {
+    "w_rank": 0.05,
+    "w_sep": 0.2,
+    "w_hack": 0.4,
+    "w_intra": 0.35,
+    "spearman": -0.6306562238868914
+  },
+  "baseline_spearman": -0.9189562119494703,
+  "note": "Apply best_weights in scoring.build_calibrated_metrics defaults after N>=20 confirm."
+}

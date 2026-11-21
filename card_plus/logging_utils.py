@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -17,6 +18,34 @@ def append_card_plus_log(
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
     return path
+
+
+def append_cost_event(
+    run_dir: str,
+    *,
+    stage: str,
+    iteration: Optional[int] = None,
+    prompt_tokens: Optional[int] = None,
+    completion_tokens: Optional[int] = None,
+    llm_calls: Optional[int] = None,
+    rl_steps: Optional[int] = None,
+    wall_s: Optional[float] = None,
+    extra: Optional[Dict[str, Any]] = None,
+    filename: str = "card_plus_cost.jsonl",
+) -> Path:
+    """Append one cost/accounting event to the run cost ledger."""
+    record: Dict[str, Any] = {
+        "ts": time.time(),
+        "stage": str(stage),
+        "iteration": iteration,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "llm_calls": llm_calls,
+        "rl_steps": rl_steps,
+        "wall_s": wall_s,
+        "extra": extra or {},
+    }
+    return append_card_plus_log(run_dir, record, filename=filename)
 
 
 def make_iteration_log(

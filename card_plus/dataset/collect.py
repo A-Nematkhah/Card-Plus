@@ -4,18 +4,42 @@ Smoke::
 
     python -m card_plus.dataset.collect --out logs/crowdnav_ds_smoke --n-cases 16
 
-Balanced set for dataset gate (recommended)::
+Balanced set for dataset gate (H=20, keep permanently)::
 
-    python -m card_plus.dataset.collect --out logs/crowdnav_ds_v1 \\
-        --pool 1000 --n-cases 80 --min-near-path 0 --min-clearance 0.35 \\
+    python -m card_plus.dataset.collect --out results/datasets/crowdnav_ds_h20 \\
+        --human-num 20 --pool 1000 --n-cases 80 --min-near-path 0 --min-clearance 0.35 \\
         --selection balanced --randomization with_random \\
         --policies go_to_goal,noisy_go_to_goal,flee,stationary,random \\
         --random-seeds 0,1,2 --noise-std 0.3
 
+Same recipe for H=10::
+
+    python -m card_plus.dataset.collect --out results/datasets/crowdnav_ds_h10 \\
+        --human-num 10 --pool 1000 --n-cases 80 --min-near-path 0 --min-clearance 0.35 \\
+        --selection balanced --randomization with_random \\
+        --policies go_to_goal,noisy_go_to_goal,flee,stationary,random \\
+        --random-seeds 0,1,2 --noise-std 0.3
+
+Denser H=15 (more easy scenarios + slow_goto for success labels)::
+
+    python -m card_plus.dataset.collect --out results/datasets/crowdnav_ds_h15 \\
+        --human-num 15 --pool 2000 --n-cases 80 --min-near-path 0 --min-clearance 0.35 \\
+        --selection balanced_dense --randomization with_random \\
+        --policies go_to_goal,slow_go_to_goal,noisy_go_to_goal,flee,stationary,random \\
+        --random-seeds 0,1,2 --noise-std 0.3
+
+Dataset v2 (slow_goto + cautious/ORCA-like + optional on-policy SAC checkpoint)::
+
+    python -m card_plus.dataset.collect --out results/datasets/crowdnav_ds_v2 \\
+        --human-num 15 --pool 2000 --n-cases 80 --min-near-path 0 --min-clearance 0.35 \\
+        --selection balanced_dense --randomization with_random \\
+        --policies go_to_goal,slow_go_to_goal,cautious,noisy_go_to_goal,flee,stationary,random,sac \\
+        --sac-path PATH/TO/checkpoint.zip --random-seeds 0,1,2 --noise-std 0.3
+
 Hard-only (legacy; often too collision-heavy for the gate)::
 
-    python -m card_plus.dataset.collect --out logs/crowdnav_ds_v1 \\
-        --pool 500 --n-cases 200 --min-near-path 2 --selection hardest \\
+    python -m card_plus.dataset.collect --out results/datasets/crowdnav_ds_h20 \\
+        --human-num 20 --pool 500 --n-cases 200 --min-near-path 2 --selection hardest \\
         --randomization with_random \\
         --policies go_to_goal,noisy_go_to_goal,stationary,random \\
         --random-seeds 0,1,2 --noise-std 0.3
@@ -43,7 +67,8 @@ from card_plus.dataset.scenarios import (
     save_manifest,
     summarize_manifest,
 )
-from card_plus.dataset.schema import save_episode
+from card_plus.dataset.schema import DATASET_FORMAT_VERSION, load_episode, save_episode
+from card_plus.dataset.split import ensure_dataset_split
 
 
 def _parse_csv_strs(raw: str) -> List[str]:
@@ -82,6 +107,8 @@ def _expand_policy_jobs(
         elif key in ("slow_go_to_goal", "slow_goto"):
             speed = 0.35
             jobs.append((f"slow_goto_s{speed:g}", "slow_go_to_goal", {"speed": speed}))
+        elif key in ("cautious", "cautious_orca", "orca_like"):
+            jobs.append(("cautious", "cautious", {}))
         elif key in ("flee", "flee_human", "flee_nearest_human"):
             jobs.append(("flee", "flee", {}))
         elif key in ("sac", "sb3_sac"):
@@ -129,6 +156,7 @@ def collect(
     corridor: float = 1.0,
     allow_soft_fill: bool = False,
     selection: str = "hardest",
+    human_num: int = 20,
 ) -> dict:
     out_dir = Path(out_dir)
     episodes_dir = out_dir / "episodes"
@@ -138,12 +166,18 @@ def collect(
                 old.unlink()
     episodes_dir.mkdir(parents=True, exist_ok=True)
 
-    env_config: Dict[str, Any] = {"randomization": str(randomization)}
+    human_num = int(human_num)
+    if human_num < 1:
+        raise ValueError(f"human_num={human_num} must be >= 1")
+    env_config: Dict[str, Any] = {
+        "randomization": str(randomization),
+        "human_num": human_num,
+    }
     pool_n = int(pool) if pool is not None else int(n_cases)
 
     print(
         f"[collect] scanning pool={pool_n} keep={n_cases} seed={this_seed} "
-        f"offset={case_offset} randomization={randomization} "
+        f"offset={case_offset} human_num={human_num} randomization={randomization} "
         f"min_near_path={min_near_path} min_clearance={min_clearance} "
         f"max_clearance={max_clearance} selection={selection}"
     )
@@ -161,6 +195,12 @@ def collect(
         allow_soft_fill=bool(allow_soft_fill),
         selection=str(selection),
     )
+    if specs and int(specs[0].human_num) != human_num:
+        raise RuntimeError(
+            f"collect requested human_num={human_num} but scenarios have "
+            f"{specs[0].human_num}. Unset CARD_HUMAN_NUM or pass human_num via "
+            f"--human-num only (explicit collect config must win)."
+        )
     save_manifest(specs, out_dir / "manifest.json")
     summary = summarize_manifest(specs)
     summary["pool_scanned"] = pool_n
@@ -216,6 +256,7 @@ def collect(
 
     (out_dir / "index.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
     meta = {
+        "dataset_format_version": int(DATASET_FORMAT_VERSION),
         "n_cases": int(n_cases),
         "pool": pool_n,
         "case_offset": int(case_offset),
@@ -226,6 +267,7 @@ def collect(
         "noise_seeds": list(noise_seeds),
         "noise_std": float(noise_std),
         "randomization": str(randomization),
+        "human_num": human_num,
         "min_near_path": float(min_near_path),
         "min_clearance": min_clearance,
         "max_clearance": max_clearance,
@@ -234,6 +276,12 @@ def collect(
         "seconds": round(time.time() - t0, 2),
     }
     (out_dir / "collect_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    # Write stratified train/val scenario split for Phase-2 gate calibration.
+    try:
+        eps = [load_episode(out_dir / row["path"]) for row in index]
+        ensure_dataset_split(out_dir, eps, seed=int(this_seed))
+    except Exception as exc:
+        print(f"[collect] warning: could not write scenario_split.json: {exc}")
     print(f"[collect] wrote {len(index)} episodes -> {out_dir}")
     return meta
 
@@ -255,6 +303,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     p.add_argument("--case-offset", type=int, default=0)
     p.add_argument("--this-seed", type=int, default=DEFAULT_THIS_SEED)
+    p.add_argument(
+        "--human-num",
+        type=int,
+        default=20,
+        help="Pedestrian count (keep separate datasets: crowdnav_ds_h10 / crowdnav_ds_h20)",
+    )
     p.add_argument(
         "--randomization",
         type=str,
@@ -284,8 +338,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--selection",
         type=str,
         default="hardest",
-        choices=("hardest", "spread", "balanced"),
-        help="hardest|spread|balanced (balanced≈50/30/20 easy/med/hard for gate)",
+        choices=("hardest", "spread", "balanced", "balanced_dense"),
+        help="hardest|spread|balanced(~50/30/20)|balanced_dense(~60/25/15 for H>=15)",
     )
     p.add_argument(
         "--allow-soft-fill",
@@ -298,7 +352,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--policies",
         type=str,
         default="go_to_goal,stationary,random",
-        help="Comma-separated: go_to_goal,noisy_go_to_goal,flee,stationary,random,sac,noisy_sac",
+        help="Comma-separated: go_to_goal,slow_go_to_goal,cautious,noisy_go_to_goal,"
+        "flee,stationary,random,sac,noisy_sac",
     )
     p.add_argument("--sac-path", type=str, default=None, help="SB3 SAC .zip")
     p.add_argument("--max-steps", type=int, default=None, help="Cap horizon (default: env max)")
@@ -336,6 +391,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         noise_seeds=_parse_int_list(args.noise_seeds),
         noise_std=float(args.noise_std),
         randomization=str(args.randomization),
+        human_num=int(args.human_num),
         min_near_path=float(args.min_near_path),
         max_clearance=None if args.max_clearance is None else float(args.max_clearance),
         min_clearance=None if args.min_clearance is None else float(args.min_clearance),

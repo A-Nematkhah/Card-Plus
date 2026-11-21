@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from typing import Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -242,10 +242,10 @@ def calibrated_composite(
     separation: float,
     anti_hack: float,
     intra_scenario: float = 0.0,
-    w_rank: float = 0.10,
-    w_sep: float = 0.30,
-    w_hack: float = 0.30,
-    w_intra: float = 0.30,
+    w_rank: float = 0.05,
+    w_sep: float = 0.15,
+    w_hack: float = 0.65,
+    w_intra: float = 0.15,
 ) -> float:
     """Mix signals so pairwise-only rewards cannot sit at ~1.0 forever.
 
@@ -277,34 +277,29 @@ def build_calibrated_metrics(
     returns: Sequence[float],
     probe_metrics: Mapping[str, float],
     *,
-    w_rank: float = 0.10,
-    w_sep: float = 0.30,
-    w_hack: float = 0.30,
-    w_intra: float = 0.30,
+    w_rank: float = 0.05,
+    w_sep: float = 0.15,
+    w_hack: float = 0.65,
+    w_intra: float = 0.15,
+    learned_judge: Optional[Any] = None,
 ) -> Tuple[float, Dict[str, float]]:
-    """Return (composite, metrics dict including breakdown)."""
+    """Return (composite, metrics dict including breakdown).
+
+    Defaults follow Phase-2 redesign (boost anti_hack, downweight saturated
+    rank/sep/intra). If ``learned_judge`` is provided, ``composite`` is the
+    judge score (G2) while component metrics remain for diagnostics.
+    """
     rank = offline_rank_score(report)
     sep_map = separation_scores(episodes, returns)
     intra_map = intra_scenario_score(episodes, returns)
     hack = anti_hack_score(probe_metrics)
     sep = float(sep_map.get("separation", 0.0))
     intra = float(intra_map.get("intra_scenario", 0.0))
-    composite = calibrated_composite(
-        offline_rank=rank,
-        separation=sep,
-        anti_hack=hack,
-        intra_scenario=intra,
-        w_rank=w_rank,
-        w_sep=w_sep,
-        w_hack=w_hack,
-        w_intra=w_intra,
-    )
     metrics: Dict[str, float] = {
         "offline_rank": rank,
         "separation": sep,
         "anti_hack": hack,
         "intra_scenario": intra,
-        "composite": composite,
         "progress_auc": float(report.progress_auc),
         "tpe_v1_rate": float("nan")
         if report.tpe_v1_rate is None
@@ -315,4 +310,26 @@ def build_calibrated_metrics(
     metrics.update({k: float(v) for k, v in sep_map.items()})
     metrics.update({k: float(v) for k, v in intra_map.items()})
     metrics.update({k: float(v) for k, v in probe_metrics.items()})
+    linear = calibrated_composite(
+        offline_rank=rank,
+        separation=sep,
+        anti_hack=hack,
+        intra_scenario=intra,
+        w_rank=w_rank,
+        w_sep=w_sep,
+        w_hack=w_hack,
+        w_intra=w_intra,
+    )
+    if learned_judge is not None:
+        raw = float(learned_judge.score_metrics(metrics))
+        # Prefer bounded gate_score for keep/select; keep raw for diagnostics.
+        if hasattr(learned_judge, "gate_score"):
+            composite = float(learned_judge.gate_score(metrics))
+        else:
+            composite = raw
+        metrics["composite_linear"] = float(linear)
+        metrics["judge_raw"] = raw
+    else:
+        composite = float(linear)
+    metrics["composite"] = float(composite)
     return composite, metrics

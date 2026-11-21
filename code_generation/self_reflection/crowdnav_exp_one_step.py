@@ -61,6 +61,20 @@ RL_QUERY = "rl_query_code"
 CHECKPOINT = "checkpoint"
 
 
+def resolve_crowdnav_algo(args=None) -> str:
+    """Return ``sac`` (flat) or ``ppo`` (CrowdNav++ / GST)."""
+    raw = ""
+    if args is not None:
+        raw = str(getattr(args, "algo", "") or "").strip().lower()
+    if not raw:
+        raw = os.environ.get("CARD_ALGO", "ppo").strip().lower()
+    if raw in ("sac", "sb3_sac", "flat"):
+        return "sac"
+    if raw in ("ppo", "gst", "crowdnav_pp", "pp", "srnn"):
+        return "ppo"
+    raise ValueError(f"Unknown CrowdNav algo {raw!r}; use sac or ppo")
+
+
 def env_is_valid(reward_code_str, args):
     static_ok, static_reasons = check_reward_code_static(reward_code_str)
     if not static_ok:
@@ -112,6 +126,46 @@ def env_is_valid(reward_code_str, args):
 
 
 def train_and_eval(
+    args,
+    seed,
+    step,
+    use_ground_truth_reward: bool,
+    specific_code,
+    specific_code_path: str,
+    load_model,
+    *,
+    resume_model_path: str = None,
+    train_steps: int = None,
+):
+    """Dispatch to SAC flat or PPO/GST train path."""
+    if resolve_crowdnav_algo(args) == "sac":
+        from code_generation.self_reflection.crowdnav_sac_train import train_and_eval_sac
+
+        return train_and_eval_sac(
+            args,
+            seed,
+            step,
+            use_ground_truth_reward,
+            specific_code,
+            specific_code_path,
+            load_model,
+            resume_model_path=resume_model_path,
+            train_steps=train_steps,
+        )
+    return train_and_eval_ppo(
+        args,
+        seed,
+        step,
+        use_ground_truth_reward,
+        specific_code,
+        specific_code_path,
+        load_model,
+        resume_model_path=resume_model_path,
+        train_steps=train_steps,
+    )
+
+
+def train_and_eval_ppo(
     args,
     seed,
     step,
@@ -324,6 +378,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp_name", type=str, default="card")
     parser.add_argument("--task_name", type=str, default="circle-crossing-v0")
+    parser.add_argument(
+        "--algo",
+        type=str,
+        default=None,
+        choices=["sac", "ppo", "flat", "gst", "crowdnav_pp"],
+        help="Train backend: sac=flat SB3 SAC (H=10 legacy); ppo=CrowdNav++/GST. "
+        "Default from CARD_ALGO env (else ppo).",
+    )
     parser.add_argument("--log_path", type=str, default=None)
     parser.add_argument("--llm_model_name", type=str, default="grok-4.3")
     parser.add_argument("--reasoning_effort", type=str, default=None)

@@ -1,0 +1,42 @@
+{
+  "table": [
+    {
+      "code": "C0",
+      "n_runs": 1,
+      "success_ci": "nan",
+      "mean_llm_calls": 0.0,
+      "mean_rl_steps": 0.0,
+      "mean_tokens": 0.0,
+      "runs": [
+        {
+          "run_dir": "results\\runs\\crowdnav\\SAC_H15_2026-11-21-10-50-39",
+          "best_score": null,
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "llm_calls": 0,
+          "rl_steps": 0,
+          "wall_s": 0
+        }
+      ]
+    },
+    {
+      "code": "C1",
+      "n_runs": 1,
+      "success_ci": "nan",
+      "mean_llm_calls": 0.0,
+      "mean_rl_steps": 0.0,
+      "mean_tokens": 0.0,
+      "runs": [
+        {
+          "run_dir": "results\\runs\\crowdnav\\SAC_H15_2026-11-21-10-24-36",
+          "best_score": null,
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "llm_calls": 0,
+          "rl_steps": 0,
+          "wall_s": 0
+        }
+      ]
+    }
+  ]
+}

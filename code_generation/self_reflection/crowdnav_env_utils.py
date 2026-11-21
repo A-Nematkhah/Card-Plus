@@ -141,7 +141,16 @@ def build_config(
     if env_config:
         task.update(env_config)
 
+    # CARD_HUMAN_NUM only when caller did not pass an explicit human_num
+    # (so ``collect --human-num 15`` is not silently overridden by a leftover env).
+    if "human_num" not in (env_config or {}):
+        human_num_env = os.environ.get("CARD_HUMAN_NUM", "").strip()
+        if human_num_env:
+            task["human_num"] = int(human_num_env)
+
     human_num = int(task["human_num"])
+    if human_num < 1:
+        raise ValueError(f"human_num={human_num} must be >= 1")
     if human_num > MAX_HUMANS_PAD:
         raise ValueError(f"human_num={human_num} exceeds MAX_HUMANS_PAD={MAX_HUMANS_PAD}")
 

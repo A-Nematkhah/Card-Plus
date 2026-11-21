@@ -56,6 +56,13 @@ class VersionRecord:
     rho_dense: Optional[float] = None
     hacked: Optional[bool] = None
     verdict: Optional[str] = None
+    # Phase-0 fields for gate↔online calibration (Phase 2).
+    gate_composite: Optional[float] = None
+    gate_metrics: Optional[Dict[str, Any]] = None
+    online_success: Optional[float] = None
+    # Phase-4 seed-noise aware rollback.
+    score_std: Optional[float] = None
+    n_seeds: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -191,7 +198,22 @@ class RewardArchive:
         best = self.best_record_excluding(exclude_iteration)
         if best is None:
             return False
-        return score < float(best.version_score) - self.cfg.rollback_margin
+        margin = float(self.cfg.rollback_margin)
+        # Phase-4: require drop beyond margin + k * seed-std of the challenger/best.
+        k = float(getattr(self.cfg, "rollback_std_k", 0.0) or 0.0)
+        noise = 0.0
+        if k > 0.0:
+            stds = []
+            if best.score_std is not None:
+                stds.append(float(best.score_std))
+            # If current score came with std stored on latest same-iter preview, skip;
+            # callers can pass noise via cfg.rollback_score_std override.
+            override = getattr(self.cfg, "rollback_score_std", None)
+            if override is not None:
+                stds.append(float(override))
+            if stds:
+                noise = k * float(max(stds))
+        return score < float(best.version_score) - margin - noise
 
     def format_rollback_notice(
         self,

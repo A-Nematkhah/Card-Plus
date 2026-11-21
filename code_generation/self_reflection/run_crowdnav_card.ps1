@@ -1,12 +1,14 @@
-﻿# CARD loop for CrowdNav++ / EvoNav (GST + PPO/SRNN), defaults ON:
-# - Dataset gate (results/datasets/crowdnav_ds_v1) + LLM multi-candidate selection
-# - CARD+ archive / TPE / SH finalists
-# - Short screen then top-K finalist continue
-# - Single-process DummyVecEnv (PPO+GST stack; TrainNum>1 does not parallelize yet)
+# CARD loop for CrowdNav. Two backends:
+#   -Algo sac  : flat obs + SB3 SAC (no GST)
+#                H=10: 5x150k + 2x550k finalists (legacy ~92% recipe)
+#                H>=15: 5x250k + 2x800k; eval 10k/10 mid, held-out 100
+#   -Algo ppo  : CrowdNav++ selfAttn SRNN (+ optional CARD_GST=1)
+#                default budget 5x250k short + 2x1.2M finalists, H=20 unless CARD_HUMAN_NUM set
 #
-# H=20 GST/PPO budget (if short still weak vs H=10): 5x250k screen + 2x1.2M finalists.
-# Approx RL ~3.5M env steps. Override with -TrainMaxSteps / -FinalistSteps etc.
+# Dataset gate + CARD+ / SH finalists ON by default.
 param(
+    [ValidateSet("sac","ppo")]
+    [string]$Algo = "ppo",
     [string]$ResumeLogPath = "",
     [int]$StartStep = 0,
     [int]$TrainRounds = 5,
@@ -35,7 +37,10 @@ param(
     [string]$DatasetPath = "",
     [switch]$EvalBest,
     # If dataset missing: fail (default) instead of silently disabling the gate.
-    [switch]$AllowMissingDataset
+    [switch]$AllowMissingDataset,
+    # G2 learned judge (Phase-2 No-Go redesign). Empty = off; set path or -UseG2Judge.
+    [string]$LearnedJudge = "",
+    [switch]$UseG2Judge
 )
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -63,6 +68,27 @@ if ($Smoke) {
     $FinalEvalEpisodes = 4
 }
 
+# SAC flat profile. H=10 matches the ~92% run; H>=15 uses a larger train budget.
+# Eval: 10k freq x 10 eps (same mid density as the proven run); held-out 100 eps.
+$env:CARD_ALGO = $Algo
+if ($Algo -eq "sac") {
+    if ($env:CARD_GST) { Remove-Item Env:CARD_GST -ErrorAction SilentlyContinue }
+    if (-not $env:CARD_HUMAN_NUM) { $env:CARD_HUMAN_NUM = "10" }
+    if (-not $Smoke) {
+        $sacHumans = if ($env:CARD_HUMAN_NUM -match '^\d+$') { [int]$env:CARD_HUMAN_NUM } else { 10 }
+        if ($sacHumans -ge 15) {
+            if (-not $PSBoundParameters.ContainsKey("TrainMaxSteps")) { $TrainMaxSteps = 250000 }
+            if (-not $PSBoundParameters.ContainsKey("FinalistSteps")) { $FinalistSteps = 800000 }
+        } else {
+            if (-not $PSBoundParameters.ContainsKey("TrainMaxSteps")) { $TrainMaxSteps = 150000 }
+            if (-not $PSBoundParameters.ContainsKey("FinalistSteps")) { $FinalistSteps = 550000 }
+        }
+        if (-not $PSBoundParameters.ContainsKey("NEvalEpisodes")) { $NEvalEpisodes = 10 }
+        if (-not $PSBoundParameters.ContainsKey("EvalFreq")) { $EvalFreq = 10000 }
+        if (-not $PSBoundParameters.ContainsKey("FinalEvalEpisodes")) { $FinalEvalEpisodes = 100 }
+    }
+}
+
 if ($env:CARD_PYTHON -and (Test-Path -LiteralPath $env:CARD_PYTHON)) {
     $py = $env:CARD_PYTHON
 } else {
@@ -76,14 +102,22 @@ if (-not $env:CARD_DEVICE) { $env:CARD_DEVICE = "cpu" }
 
 Write-Host "REPO=$repo"
 Write-Host "PYTHON=$py"
-$gstFlag = if ($env:CARD_GST -and $env:CARD_GST -match '^(1|true|yes|on)$') { "GST=on(inferred)" } else { "GST=off(const_vel)" }
-Write-Host "Stack: CrowdNav++ PPO/selfAttn SRNN + $gstFlag | env H=20 robot_visible=False"
+$gstFlag = if ($env:CARD_GST -and $env:CARD_GST -match '^(1|true|yes|on)$') { "GST=on(inferred)" } else { "GST=off" }
+$humanNum = if ($env:CARD_HUMAN_NUM -and $env:CARD_HUMAN_NUM -match '^\d+$') { [int]$env:CARD_HUMAN_NUM } else { 20 }
+if ($Algo -eq "sac") {
+    Write-Host "Stack: SAC + flat obs | env H=$humanNum robot_visible=False (no GST)"
+} else {
+    Write-Host "Stack: CrowdNav++ PPO/selfAttn SRNN + $gstFlag | env H=$humanNum robot_visible=False"
+}
 Write-Host "Device: CARD_DEVICE=$($env:CARD_DEVICE) torch_threads=4"
 Write-Host "Features: CardPlus/SH=$CardPlus DatasetGate=$(-not $NoDatasetRescore) Finalists=$(-not $NoFinalists)"
+Write-Host "Budget: short=$TrainMaxSteps x$TrainRounds finalists=$FinalistTopK x$FinalistSteps"
+Write-Host "Eval: freq=$EvalFreq n_mid=$NEvalEpisodes held_out/final=$FinalEvalEpisodes"
 
 $common = @(
     "--exp_name", "card",
     "--task_name", "circle-crossing-v0",
+    "--algo", "$Algo",
     "--llm_model_name", "grok-4.3",
     "--temperature", "0.7",
     "--eval_freq", "$EvalFreq",
@@ -114,9 +148,18 @@ if ($CardPlus) {
 }
 
 # Optimal dataset gate: keep only rewards that separate success/collision/timeout.
+# Two permanent configs: H=10 -> crowdnav_ds_h10, H=20 -> crowdnav_ds_h20 (legacy alias: crowdnav_ds_v1).
 if (-not $NoDatasetRescore) {
     if ($DatasetPath -eq "") {
-        $DatasetPath = Join-Path $repo "results\datasets\crowdnav_ds_v1"
+        $dsNamed = Join-Path $repo ("results\datasets\crowdnav_ds_h{0}" -f $humanNum)
+        $dsLegacy = Join-Path $repo "results\datasets\crowdnav_ds_v1"
+        if (Test-Path -LiteralPath $dsNamed) {
+            $DatasetPath = $dsNamed
+        } elseif ($humanNum -eq 20 -and (Test-Path -LiteralPath $dsLegacy)) {
+            $DatasetPath = $dsLegacy
+        } else {
+            $DatasetPath = $dsNamed
+        }
     }
     if (Test-Path -LiteralPath $DatasetPath) {
         $common += @(
@@ -133,11 +176,21 @@ if (-not $NoDatasetRescore) {
             "--llm_candidates", "$LlmCandidates",
             "--llm_candidate_retries", "4"
         )
+        if ($UseG2Judge -and $LearnedJudge -eq "") {
+            $LearnedJudge = Join-Path $repo "results\learned_judge_g2.json"
+        }
+        if ($LearnedJudge -ne "") {
+            if (-not (Test-Path -LiteralPath $LearnedJudge)) {
+                throw "Learned judge not found: $LearnedJudge (run scripts/fit_learned_judge.py first)"
+            }
+            $common += @("--dataset_learned_judge", "$LearnedJudge")
+            Write-Host "G2 learned judge ON: $LearnedJudge"
+        }
         Write-Host "Dataset gate ON ($DatasetMode): $DatasetPath (LLM $LlmCandidates candidates -> best composite out)"
     } else {
-        $msg = "Dataset not found at $DatasetPath. Collect first: python -m card_plus.dataset.collect --out results/datasets/crowdnav_ds_v1 ..."
+        $msg = "Dataset not found at $DatasetPath. Collect first: python -m card_plus.dataset.collect --out results/datasets/crowdnav_ds_h$humanNum --human-num $humanNum --pool 1000 --n-cases 80 --min-near-path 0 --min-clearance 0.35 --selection balanced --randomization with_random --policies go_to_goal,noisy_go_to_goal,flee,stationary,random --random-seeds 0,1,2 --noise-std 0.3"
         if ($AllowMissingDataset) {
-            Write-Host "WARNING: $msg — gate disabled (-AllowMissingDataset)"
+            Write-Host "WARNING: $msg - gate disabled (-AllowMissingDataset)"
         } else {
             throw $msg
         }
@@ -147,7 +200,7 @@ Write-Host "TrainNum=$TrainNum EvalNum=$EvalNum VecEnv=$VecEnv CardPlus=$CardPlu
 $continueSteps = [Math]::Max(0, $FinalistSteps - $TrainMaxSteps)
 $approxShort = $TrainRounds * $TrainMaxSteps
 $approxFinal = $FinalistTopK * $continueSteps
-Write-Host "LEAN budget: short=${TrainRounds}x${TrainMaxSteps}=$approxShort; finalists=${FinalistTopK}x+${continueSteps}=$approxFinal; total_RL≈$($approxShort+$approxFinal)"
+Write-Host "LEAN budget: short=${TrainRounds}x${TrainMaxSteps}=$approxShort; finalists=${FinalistTopK}x+${continueSteps}=$approxFinal; total_RL~=$($approxShort+$approxFinal)"
 Write-Host "eval: mid_train every ${EvalFreq} steps x ${NEvalEpisodes}eps (SH); end_of_short=${FinalEvalEpisodes}eps; llm_cand=$LlmCandidates; NoFinalists=$NoFinalists"
 
 function Invoke-Card([string[]]$arguments, [string]$name) {
@@ -178,7 +231,11 @@ if ($ResumeLogPath -ne "") {
     Write-Host "Resuming LOG_PATH=$runLogPath from step $StartStep"
 } else {
     $stamp = Get-Date -Format "yyyy-MM-dd-HH-mm-ss"
-    $runLogPath = Join-Path $runsRoot "PPO_GST_H20_$stamp"
+    if ($Algo -eq "sac") {
+        $runLogPath = Join-Path $runsRoot ("SAC_H{0}_{1}" -f $humanNum, $stamp)
+    } else {
+        $runLogPath = Join-Path $runsRoot ("PPO_GST_H{0}_{1}" -f $humanNum, $stamp)
+    }
     New-Item -ItemType Directory -Force -Path $runLogPath | Out-Null
     $StartStep = 0
     Invoke-Card (@("crowdnav_exp_one_step.py") + $common + @("--step", "0", "--log_path", $runLogPath)) "step0"
@@ -214,21 +271,24 @@ for ($k = 1; $k -le $TrainRounds; $k++) {
         $stepArgs = @("crowdnav_exp_one_step.py") + $common + @("--step", "$k", "--log_path", $runLogPath)
         # If train already finished and checkpoint exists, skip re-training.
         $ckpt = Join-Path $runLogPath "checkpoint_$k.pkl"
-        $modelPt = Join-Path $runLogPath "code_$($k - 1)\seed_1\tensorboard_log\latest_model.pt"
-        $evalNpz = Join-Path $runLogPath "code_$($k - 1)\seed_1\tensorboard_log\eval\evaluations.npz"
-        $finalEval = Join-Path $runLogPath "code_$($k - 1)\seed_1\tensorboard_log\eval\final_eval.json"
+        $tb = Join-Path $runLogPath "code_$($k - 1)\seed_1\tensorboard_log"
+        $modelPt = Join-Path $tb "latest_model.pt"
+        $modelZip = Join-Path $tb "latest_model.zip"
+        $evalNpz = Join-Path $tb "eval\evaluations.npz"
+        $finalEval = Join-Path $tb "eval\final_eval.json"
+        $modelPath = if ($Algo -eq "sac") { $modelZip } else { $modelPt }
         $skippedTrain = $false
         if (Test-Path -LiteralPath $ckpt) {
             $stepArgs += "--checkpoint"
             $skippedTrain = $true
             Write-Host "Found $ckpt -> loading with --checkpoint (skip train)"
-        } elseif ((Test-Path -LiteralPath $modelPt) -and ((Test-Path -LiteralPath $evalNpz) -or (Test-Path -LiteralPath $finalEval))) {
+        } elseif ((Test-Path -LiteralPath $modelPath) -and ((Test-Path -LiteralPath $evalNpz) -or (Test-Path -LiteralPath $finalEval))) {
             # Train finished (eval artifacts present): skip retrain, finish collect/feedback.
             $stepArgs += "--load_model"
-            Write-Host "Found completed $modelPt + eval -> --load_model (skip train)"
-        } elseif (Test-Path -LiteralPath $modelPt) {
-            # Mid-train interrupt: do NOT --load_model; Python resumes/heals corrupt .pt.
-            Write-Host "Found incomplete $modelPt (no eval yet) -> resume/retrain in Python"
+            Write-Host "Found completed $modelPath + eval -> --load_model (skip train)"
+        } elseif (Test-Path -LiteralPath $modelPath) {
+            # Mid-train interrupt: do NOT --load_model; Python resumes/heals.
+            Write-Host "Found incomplete $modelPath (no eval yet) -> resume/retrain in Python"
         }
         Invoke-Card $stepArgs "step$k"
     }
@@ -246,11 +306,12 @@ if (-not $NoFinalists) {
             $finArgs = @(
                 "crowdnav_finalists.py",
                 "--log_path", "$runLogPath",
+                "--algo", "$Algo",
                 "--top_k", "$FinalistTopK",
                 "--train_max_steps", "$FinalistSteps",
                 "--short_train_steps", "$TrainMaxSteps",
                 "--final_eval_seed", "1001",
-                "--final_eval_episodes", "50",
+                "--final_eval_episodes", "$FinalEvalEpisodes",
                 "--eval_freq", "$EvalFreq",
                 "--train_num", "$TrainNum",
                 "--eval_num", "$EvalNum",
@@ -285,7 +346,7 @@ if ($EvalBest) {
 Write-Host "DONE $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "log: $runLogPath"
 Write-Host "Resume:"
-Write-Host "  .\run_crowdnav_card.ps1 -ResumeLogPath <log> -StartStep N"
+Write-Host ("  .\run_crowdnav_card.ps1 -Algo $Algo -ResumeLogPath LOG_PATH -StartStep N")
 $resultsHint = Join-Path $repo "results\crowdnav"
 if (Test-Path -LiteralPath $resultsHint) {
     $latestResult = Get-ChildItem -LiteralPath $resultsHint -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1

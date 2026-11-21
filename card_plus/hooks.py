@@ -26,7 +26,16 @@ from card_plus.archive import (
     unified_diff_line_count,
 )
 from card_plus.config import CardPlusConfig
-from card_plus.logging_utils import append_card_plus_log, make_iteration_log
+from card_plus.failure_feedback import format_failure_feedback
+from card_plus.hypothesis_loop import (
+    hypothesis_prompt_instruction,
+    rejected_memory_block,
+)
+from card_plus.logging_utils import (
+    append_card_plus_log,
+    append_cost_event,
+    make_iteration_log,
+)
 from card_plus.loop_control import another_coder_query_follows, is_final_train_step
 from card_plus.reward_utils import recompute_reward_on_traj
 from card_plus.subreward_stats import append_subreward_stats
@@ -71,6 +80,8 @@ def enrich_feedback(
     benchmark_name: str = "metaworld",
     version_index: Optional[int] = None,
     version_score: Optional[float] = None,
+    run_dir: Optional[str] = None,
+    dataset_episodes: Optional[Sequence[Any]] = None,
 ) -> str:
     """Append dense-shaping then sub-reward stats after process/traj/preference text.
 
@@ -116,6 +127,21 @@ def enrich_feedback(
             f"{cfg.tpe_v2_min_trajs}; no offline stats this step.)"
         )
         out = (out.rstrip() + "\n\n" + note) if out else note
+
+    if cfg.use_hypothesis_loop:
+        block = hypothesis_prompt_instruction()
+        if run_dir:
+            mem = rejected_memory_block(run_dir)
+            if mem:
+                block = block + "\n\n" + mem
+        out = (out.rstrip() + "\n\n" + block) if out else block
+
+    if cfg.use_failure_cluster_feedback and dataset_episodes:
+        fail_txt = format_failure_feedback(
+            dataset_episodes, max_lines=int(cfg.max_feedback_lines)
+        )
+        if fail_txt:
+            out = (out.rstrip() + "\n\n" + fail_txt) if out else fail_txt
     return out
 
 
@@ -318,6 +344,35 @@ def write_iteration_log(
             pass_v1_overridden=tpe_v2.pass_v1_overridden if tpe_v2 else None,
             is_final_step=is_final_step,
         ),
+    )
+    prompt_tok = None
+    completion_tok = None
+    if isinstance(token_counts, dict):
+        prompt_tok = token_counts.get("prompt_tokens") or token_counts.get("input_tokens")
+        completion_tok = (
+            token_counts.get("completion_tokens") or token_counts.get("output_tokens")
+        )
+        if prompt_tok is None and "prompt" in token_counts:
+            prompt_tok = token_counts.get("prompt")
+        if completion_tok is None and "completion" in token_counts:
+            completion_tok = token_counts.get("completion")
+    append_cost_event(
+        run_dir,
+        stage="iteration",
+        iteration=iteration,
+        prompt_tokens=int(prompt_tok) if prompt_tok is not None else None,
+        completion_tokens=int(completion_tok) if completion_tok is not None else None,
+        llm_calls=1 if token_counts else None,
+        rl_steps=None,
+        wall_s=None,
+        extra={
+            "rl_ran": rl_ran,
+            "rolled_back": rolled_back,
+            "version_score": version_score,
+            "extra_score_final_version": extra_score_final_version,
+            "extra_train_cost": extra_train_cost,
+            "token_counts": token_counts,
+        },
     )
 
 

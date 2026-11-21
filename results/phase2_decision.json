@@ -1,0 +1,21 @@
+{
+  "phase": 2,
+  "decision": "No-Go",
+  "reason": "Composite (legacy) anti-correlated with continuous online_proxy (Spearman=-0.054056247761733546); weight grid stayed negative; archive N too small for Go. Proceed to score redesign + G2.",
+  "n_labeled": 7,
+  "legacy_spearman": -0.054056247761733546,
+  "redesign_v2_weights": {
+    "w_rank": 0.05,
+    "w_sep": 0.15,
+    "w_hack": 0.65,
+    "w_intra": 0.15
+  },
+  "redesign_v2_spearman": -0.054056247761733546,
+  "g2_judge_path": "results/learned_judge_g2.json",
+  "g2_spearman_train": 0.9910312089651149,
+  "g2_spearman_loo": 0.8108437164260032,
+  "g2_spearman_refit_all": 0.9910312089651149,
+  "go_threshold": 0.5,
+  "phase3_unlocked": false,
+  "next": "Use G2 judge behind flag; collect more continuous labels; re-evaluate Go."
+}

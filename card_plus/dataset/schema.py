@@ -12,7 +12,10 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
+# Episode pickle schema. Bump when on-disk Episode fields change incompatibly.
 SCHEMA_VERSION = 1
+# Dataset package format (index/split/meta). v2 adds scenario_split + cautious policy recipe.
+DATASET_FORMAT_VERSION = 2
 
 PathLike = Union[str, Path]
 
